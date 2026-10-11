@@ -1,0 +1,8 @@
+disc/
+files/
+build/
+asm/
+assets/
+*.ld
+__pycache__/
+.splache

@@ -1,0 +1,52 @@
+name: SCES_008.93
+sha1: 6633141b8c8911e860a23194483019cfb177569c
+options:
+  basename: sces_008.93
+  target_path: files/SCES_008.93
+  elf_path: build/sces_008.93.elf
+  base_path: .
+  platform: psx
+  compiler: PSYQ
+
+  asm_path: asm/main
+  src_path: src/main
+  build_path: build
+  asset_path: assets/main
+
+  ld_script_path: build/sces_008.93.ld
+  ld_dependencies: True
+
+  find_file_boundaries: True
+  gp_value: 0x8002EEE8
+
+  o_as_suffix: True
+  use_legacy_include_asm: False
+
+  section_order: [".rodata", ".text", ".data", ".bss"]
+
+  symbol_addrs_path:
+    - config/symbol_addrs.main.txt
+  reloc_addrs_path:
+    - config/reloc_addrs.main.txt
+  undefined_funcs_auto_path: config/undefined_funcs_auto.main.txt
+  undefined_syms_auto_path: config/undefined_syms_auto.main.txt
+
+  subalign: 2
+
+  string_encoding: ASCII
+  data_string_encoding: ASCII
+  rodata_string_guesser_level: 2
+  data_string_guesser_level: 2
+segments:
+  - name: header
+    type: header
+    start: 0x0
+
+  - name: main
+    type: code
+    start: 0x800
+    vram: 0x80010000
+    subsegments:
+      - [0x800, asm]
+      - [0x17A00, data]
+  - [0x1F800]
