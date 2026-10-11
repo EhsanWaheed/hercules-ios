@@ -42,9 +42,39 @@ All `rel` fields are offsets relative to the field's own position.
 | 0x1C | rel  | CLUT block -> VRAM (768, 480), 256x32, 0x4000 bytes; also the end of the RAM part |
 | 0x20 | rel  | 0x200-byte table passed to `func_80040A78(p, 0x7654, 0x100, 5)` (palette lookup); zeroed first in level 9 |
 | 0x24 | rel  | points to the CLUT block as well (end of RAM part)             |
-| 0x28.. | | further rel offsets into the RAM part (not yet identified)       |
-| 0x2C | u32  | looks like an RGB colour (`0x4D4D4D` in L0) -- ambient/fog?     |
-| 0x44 | u32  | entry count (69 in L0) for the u16-pair table that follows     |
+
+### RAM part header (parsed by ENGINE1 `func_8004834C`)
+
+| off  | type | meaning                                                   | global       |
+|------|------|-----------------------------------------------------------|--------------|
+| 0x08 | u16  | n: number of rel pointers at 0x30 (1 in every level)      | `D_80073DC4` |
+| 0x0A | u16  | count of table group E                                    | `D_80073DC7` |
+| 0x0C | u16  | count of table group A                                    |              |
+| 0x0E | u16  | count of table group B = **models**                       | `D_80073DC1` |
+| 0x10 | u16  | count of table group C                                    | `D_80073DC5` |
+| 0x12 | u16  | count of table group D                                    | `D_80073DC6` |
+| 0x24 | rel  | end of RAM part / CLUT block                              | `D_80073C1C` |
+| 0x28 | rel  | data block (used by `func_80039D34`, `func_800459C0`)     | `D_80073C24` |
+| 0x2C | u8[3]| RGB colour (`4D 4D 4D` in L0) -- ambient or background    | `D_80073BE4..6` |
+| 0x30 | rel[n] | n pointers                                              | `D_80073C50..` |
+| +0   | rel  | after the n pointers: four more                            | `D_80073C4C`, `C48`, `C44`, `C38` |
+| +16  | i32[] | table: groups A, B, C, D, E back to back, each entry a byte offset relative to the entry itself | `C28` (A), `C20` (B, 1-based), `C2C` (C), `C30` (D), `C40` (E), `C34` (end) |
+
+Counts per level (A / models / C / D / E):
+L0 49/0/2/0/0, L1 651/89/0/6/0, L3 668/23/2/1/0, L4 318/4/3/0/0,
+L5 588/27/0/0/0, L6 171/78/0/0/0, L7 53/16/1/0/0, L9 527/18/0/0/2,
+L11 154/1/0/1/0.
+
+### Models (group B)
+
+Game objects carry a 1-based model index at `+0x34`; `func_80039BEC` loads
+GTE rotation/translation (`ctc2`) and draws the model through a render
+function picked from `D_80069CDC[obj->+0x23]`. Model records are 4-byte
+aligned and packed back to back. Known so far: `+0x02` u8 is used as
+`n` with an `n*8`-byte block after which `+0x0A` holds an s16 count; `+0x03`
+u8 goes to `func_8003AA08` (likely a size/radius for culling). The inner
+layout (vertices/primitives) is not decoded yet -- next: `func_80039D34`
+and the render table at `D_80069CDC`.
 
 ### CLUT block
 
