@@ -65,6 +65,33 @@ L0 49/0/2/0/0, L1 651/89/0/6/0, L3 668/23/2/1/0, L4 318/4/3/0/0,
 L5 588/27/0/0/0, L6 171/78/0/0/0, L7 53/16/1/0/0, L9 527/18/0/0/2,
 L11 154/1/0/1/0.
 
+### Tiles (group A)
+
+The level is a grid of 64-unit tiles in several depth layers (collision:
+ENGINE1 `func_800489D4`, drawing: `func_800459C0`). A map cell is a u32:
+bit 0 = horizontal flip, bits 1-10 = 1-based tile index into group A,
+bits 11+ (`>> 11`) index a 4-byte record in `D_80073C48` (u16 lighting/
+vertex-colour set, u16 render flags).
+
+Group A entry i (1-based) at `table + (i-1)*4`: s16 offset in words to the
+tile definition (`entry + 4*s16`), s16 to a collision height profile.
+
+Tile definition:
+
+| off | type | meaning |
+|-----|------|---------|
+| 0x00 | s16 | type (-1 most common, also 0, 1, 4, 5) |
+| 0x02 | u8 | vertex count |
+| 0x03 | u8 | face count |
+| 0x04 | u32[] | vertices, packed like model vertices |
+| ... | u32 | (unknown) |
+| ... | 8 bytes each | faces as in models, but flag bit 7 = flat face and the texture word's top byte is an ordering-table depth bias; texture-record offset = low 16 bits |
+
+Vertices span about x -32..32 (one tile), y/z up to about +-128.
+2855 of 2861 tiles parse; the other 6 are empty placeholders (0 vertices).
+Models + tiles cover 75-93% of the non-empty texture data in L1/L3/L5/L6/
+L7/L9 (about 43% in L0 and L11); the rest is presumably sprites/HUD.
+
 ### Models (group B)
 
 Decoded from ENGINE1 `func_80039D34` (draw) and `func_8003A184` (vertex

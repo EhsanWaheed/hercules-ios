@@ -3,7 +3,7 @@
 
 Usage: cut_textures.py OUT_DIR LEVEL_FILE...
 
-For each i2.x level, every textured face's record gives a texture page, a
+For each i2.x level, every textured face (models and tiles) gives a texture page, a
 palette (CLUT column) and a UV rectangle. Rectangles with the same page and
 palette that overlap or touch are merged, so a background piece drawn with
 several quads becomes one image (no seams after upscaling). Each piece is
@@ -26,9 +26,13 @@ from level_models_tex import CLUT_BASE, NEAR_ROW, page_image, png_rgba  # noqa: 
 from level_vram import VRAM_H, VRAM_W, build_vram  # noqa: E402
 
 
-def face_rects(data):
-    """Yield (tpage, clut_column_bits, (u0, v0, u1, v1)) per textured face."""
-    hdr = header(data)
+def textured_faces(data, hdr):
+    """Yield (vertex count, texture-record offset) for every textured face.
+
+    Models (group B): flat if the texture word's top byte is non-zero.
+    Tiles (group A, see tile_faces): flat if face flag bit 7 is set; the top
+    byte of the texture word is an ordering-table depth bias there.
+    """
     for off in hdr["models"]:
         try:
             parts, _, _ = parse_model(data, off, hdr["pool"])
@@ -36,14 +40,51 @@ def face_rects(data):
             continue
         for _verts, faces in parts:
             for ids, _flags, tex in faces:
-                if tex >> 24:
-                    continue
-                uv0, clut, uv1, tpage, uv2, uv3 = struct.unpack_from("<6H", data, hdr["tex"] + tex)
-                uvs = [uv0, uv1, uv2, uv3][:len(ids)]
-                us, vs = [u & 0xFF for u in uvs], [u >> 8 for u in uvs]
-                # PS1 rasterisation excludes the right/bottom edge, but keep it:
-                # neighbouring pieces may still sample it after filtering.
-                yield tpage & 0x1FF, clut & 0x3F, (min(us), min(vs), max(us) + 1, max(vs) + 1)
+                if not tex >> 24:
+                    yield len(ids), tex
+    for _index, faces in tile_faces(data):
+        for ids, flags, tex in faces:
+            if not flags & 0x80:
+                yield len(ids), tex & 0xFFFF
+
+
+def tile_faces(data):
+    """Yield (tile index, faces) for the level's tile set (table group A).
+
+    From ENGINE1 func_800459C0: entry i (1-based) at group A + (i-1)*4; its
+    first s16 * 4 is the offset to the tile definition:
+      s16 type, u8 vertex count, u8 face count, vertices (u32 each, same
+      packing as models), one u32, then 8-byte faces like the models'.
+    """
+    n, _e, a, _m, _c, _d = struct.unpack_from("<6H", data, 8)
+    base = 0x30 + 4 * n + 16
+    for i in range(a):
+        entry = base + 4 * i
+        tile = entry + 4 * struct.unpack_from("<h", data, entry)[0]
+        nverts, nfaces = data[tile + 2], data[tile + 3]
+        pos = tile + 4 + 4 * nverts + 4
+        faces = []
+        for k in range(nfaces):
+            idx, tex = struct.unpack_from("<II", data, pos + 8 * k)
+            flags = idx >> 24
+            ids = [(idx >> (6 * j)) & 0x3F for j in range(4 if flags & 0x08 else 3)]
+            if max(ids) >= nverts:
+                break                  # not a valid tile (empty placeholder)
+            faces.append((ids, flags, tex))
+        else:
+            yield i + 1, faces
+
+
+def face_rects(data):
+    """Yield (tpage, clut_column_bits, (u0, v0, u1, v1)) per textured face."""
+    hdr = header(data)
+    for nids, tex in textured_faces(data, hdr):
+        uv0, clut, uv1, tpage, uv2, uv3 = struct.unpack_from("<6H", data, hdr["tex"] + tex)
+        uvs = [uv0, uv1, uv2, uv3][:nids]
+        us, vs = [u & 0xFF for u in uvs], [u >> 8 for u in uvs]
+        # PS1 rasterisation excludes the right/bottom edge, but keep it:
+        # neighbouring pieces may still sample it after filtering.
+        yield tpage & 0x1FF, clut & 0x3F, (min(us), min(vs), max(us) + 1, max(vs) + 1)
 
 
 def merge(rects):
