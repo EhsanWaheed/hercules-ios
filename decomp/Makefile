@@ -46,7 +46,7 @@ $(BUILD)/asm/%.o: asm/%.s
 	$(AS) $(AS_FLAGS) -o $@ $<
 
 # C: cpp -> PsyQ cc1 -> maspsx -> gas
-$(BUILD)/src/%.o: src/%.c
+$(BUILD)/src/%.o: src/%.c $(wildcard include/*.h) $(shell find asm -path "*nonmatchings*" -name "*.s" 2>/dev/null)
 	@mkdir -p $(dir $@)
 	$(CPP) $(CPP_FLAGS) $< | $(CC1) $(CC1_FLAGS) | $(MASPSX) --aspsx-version=$(ASPSX_VER) | $(AS) $(AS_FLAGS) -o $@
 

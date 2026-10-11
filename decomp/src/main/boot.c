@@ -34,7 +34,15 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_800100C0);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_800100F4);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", StSetRing);
+M2C_UNK func_80010000();                            /* extern */
+extern s32 D_80035F50;
+extern s32 D_80035F54;
+
+void StSetRing(s32 arg0, s32 arg1) {
+    D_80035F50 = arg0;
+    D_80035F54 = arg1;
+    func_80010000();
+}
 
 void func_80010158(void) {
     D_80035F58 = 0x100;
@@ -57,13 +65,32 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010940);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010A38);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010B8C);
+M2C_UNK SsSetMVol(M2C_UNK, M2C_UNK);                /* extern */
+extern s32 D_80035F74;
+extern s32 D_80035F78;
+extern s32 D_80035F7C;
+
+void func_80010B8C(void) {
+    D_80035F78 = 0x69;
+    D_80035F74 = 0x69;
+    D_80035F7C = 1;
+    SsSetMVol(0x69, 0x69);
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010BD0);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010C18);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010D54);
+M2C_UNK DrawSync(M2C_UNK);                          /* extern */
+M2C_UNK VSyncCallback(M2C_UNK);                     /* extern */
+extern s8 D_80035175;
+
+void func_80010D54(void) {
+    VSyncCallback(0);
+    DrawSync(0);
+    VSync(0);
+    D_80035175 = 0;
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010D8C);
 
@@ -83,11 +110,28 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011890);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_800118C0);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011928);
+M2C_UNK CdControlF(s32, M2C_UNK *);                 /* extern */
+M2C_UNK CdIntToPos(s32, M2C_UNK *);                 /* extern */
+extern s32 D_80034F7C;
+extern s32 D_80035FE4;
+
+void func_80011928(s32 arg0) {
+    M2C_UNK sp10;
+
+    CdIntToPos(D_80035FE4, &sp10);
+    CdControlF(arg0 & 0xFF, &sp10);
+    D_80034F7C = D_80035FE4;
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011978);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011A80);
+extern s32 D_80035F4C;
+
+void func_80011A80(s32 arg0) {
+    if (arg0 == 1) {
+        D_80035F4C = 2;
+    }
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011A9C);
 
@@ -104,7 +148,11 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011C64);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011CE0);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011CF4);
+extern s32 D_80027B64;
+
+void func_80011CF4(void) {
+    D_80027B64 = 0;
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011D04);
 
@@ -113,7 +161,13 @@ void func_80011DF0(void) {
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011DF8);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011E30);
+extern s32 D_80035FB8;
+extern s32 D_80035FBC;
+
+void func_80011E30(s32 arg0, s32 arg1) {
+    D_80035FB8 = arg0;
+    D_80035FBC = arg1;
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011E48);
 
@@ -135,7 +189,11 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012474);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012494);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_800126A0);
+void func_800126A0(void **arg0, void **arg1) {
+    M2C_FIELD(*arg1, void ***, -4) = arg0;
+    *arg0 = *arg1;
+    *arg1 = NULL;
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_800126C0);
 
@@ -147,7 +205,14 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012900);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012990);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012A1C);
+extern s16 D_800350E4;
+extern s32 D_800350F4;
+
+s32 func_80012A1C(void) {
+    D_800350E4 = 0;
+    D_800350F4 = 0;
+    return 1;
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012A34);
 
@@ -161,7 +226,24 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012E04);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012EFC);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012FAC);
+M2C_UNK func_80012180(s32);                         /* extern */
+M2C_UNK func_80012B08();                            /* extern */
+extern s32 D_800350F8;
+extern s32 D_800350FC;
+extern s16 D_80035124;
+extern s8 D_80035128;
+extern s32 D_80035130;
+
+void func_80012FAC(void) {
+    func_80012B08();
+    if (D_80035130 != 0) {
+        func_80012180(D_80035130);
+    }
+    D_80035128 = 0;
+    D_80035124 = 0;
+    D_800350F8 = 0;
+    D_800350FC = 0;
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80013008);
 
@@ -169,17 +251,35 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_800130CC);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80013284);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80013348);
+M2C_UNK InitPAD(M2C_UNK *, M2C_UNK, M2C_UNK *, M2C_UNK); /* extern */
+extern M2C_UNK D_800382C0;
+extern M2C_UNK D_800382E4;
+
+void func_80013348(void) {
+    InitPAD(&D_800382C0, 0x22, &D_800382E4, 0x22);
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_8001337C);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80013490);
+M2C_UNK PutDispEnv(s32);                            /* extern */
+M2C_UNK PutDrawEnv();                               /* extern */
+
+void func_80013490(s32 arg0) {
+    PutDrawEnv();
+    PutDispEnv(arg0 + 0x5C);
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_800134C0);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80013510);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80013568);
+M2C_UNK SetDispMask(s32);                           /* extern */
+M2C_UNK VSync(M2C_UNK);                             /* extern */
+
+void func_80013568(s32 arg0) {
+    VSync(0);
+    SetDispMask(arg0);
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_8001359C);
 
