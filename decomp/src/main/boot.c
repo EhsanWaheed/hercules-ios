@@ -11,6 +11,11 @@ typedef struct {
 } SoundState;
 
 /* --- declarations (auto_m2c appends here) --- */
+void SsSeqReplay(s16 access_num);
+extern s16 D_8002AEE2;
+extern s8 D_80035048;
+s32 GetSp(void);
+void SetSp(s32 sp);
 void func_80012494(s32 arg0, s32 arg1);
 M2C_UNK CdRead(s32, s32, M2C_UNK);                  /* extern */
 M2C_UNK CdReadSync(M2C_UNK, M2C_UNK);               /* extern */
@@ -59,18 +64,29 @@ M2C_UNK VSync(M2C_UNK);                             /* extern */
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010000);
 
-/* Logic is equivalent, but the original has the load scheduled before the
- * stack adjust, which our cc1 + maspsx pipeline does not reproduce yet.
- *
- * void func_800100C0(void) {
- *     if (D_80035F48.seqAccess != -1) {
- *         SsSeqPause(D_80035F48.seqAccess);
- *     }
- * }
- */
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_800100C0);
+/* The do/while (0) is what puts the load ahead of the stack adjust; the
+ * original was most likely written with a statement macro here. */
+void func_800100C0(void) {
+    s16 seq = D_80035F48.seqAccess;
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_800100F4);
+    do {
+        if (D_80035F48.seqAccess != -1) {
+            SsSeqPause(seq);
+        }
+    } while (0);
+}
+
+/* The do/while (0) is what puts the load ahead of the stack adjust; the
+ * original was most likely written with a statement macro here. */
+void func_800100F4(void) {
+    s16 seq = D_80035F48.seqAccess;
+
+    do {
+        if (D_80035F48.seqAccess != -1) {
+            SsSeqReplay(seq);
+        }
+    } while (0);
+}
 
 void StSetRing(s32 arg0, s32 arg1) {
     D_80035F50 = arg0;
@@ -194,7 +210,15 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011D04);
 void func_80011DF0(void) {
 }
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80011DF8);
+void func_80011DF8(void)
+{
+  s16 *new_var2;
+  s32 new_var;
+  new_var2 = &D_8002AEE2;
+  new_var = GetSp();
+  SetSp(new_var);
+  D_80035048 = (s8) (new_var = *new_var2);
+}
 
 void func_80011E30(s32 arg0, s32 arg1) {
     D_80035FB8 = arg0;

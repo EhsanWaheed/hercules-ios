@@ -47,7 +47,8 @@ def m2c(asm_path, ctx_path):
 DECL_NAME_RE = re.compile(r"(\w+)\s*(?:\(|\[|;|=)")
 
 
-DECL_MARKER = "/* --- declarations (auto_m2c appends here) --- */"
+FUNC_HEADER_RE = re.compile(r"^\w[\w\s\*]*?\b\w+\s*\([^;]*\)\s*$")
+DECL_MARKER ="/* --- declarations (auto_m2c appends here) --- */"
 
 
 def split_decls(code, src_text):
@@ -59,7 +60,9 @@ def split_decls(code, src_text):
     known = INCLUDE_RE.sub("", src_text)
     decls, body, in_body = [], [], False
     for line in code.splitlines():
-        if not in_body and line.rstrip().endswith("{"):
+        # The body starts at the function header, whether its "{" is on the
+        # same line (m2c) or on the next one (permuter output).
+        if not in_body and (line.rstrip().endswith("{") or FUNC_HEADER_RE.match(line)):
             in_body = True
         if in_body:
             body.append(line)
