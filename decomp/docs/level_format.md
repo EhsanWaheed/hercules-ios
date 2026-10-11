@@ -102,8 +102,12 @@ Texture record (12 bytes) -> GPU `POLY_FT4` (code 0x09 words):
 u16 uv0, u16 CLUT column bits; u16 uv1, u16 texpage; u16 uv2, u16 uv3.
 The CLUT row is **not** stored: the draw code ORs `(shade << 6) + 0x7830`
 (VRAM 768,480 + shade rows) into the CLUT field, shade = clamp(depth >> 5,
-1, 29). So CLUT rows 0..30 are brightness/depth levels of the same 16
-palettes, and a face's palette is selected by the column bits in its record.
+1, 29). So CLUT rows 0..30 are depth-fog levels of the same palettes (row 1 =
+closest; in some levels far rows fade to a bright fog colour), and a face's
+palette is selected by the column bits in its record. Texture pages use
+both 4-bit (16-colour palette) and 8-bit (whole 256-entry row) modes; e.g.
+most faces in L6 use 8-bit pages 0xA6/0xB6. Textured export:
+`tools/level_models_tex.py` (OBJ + MTL + one RGBA PNG per page/palette).
 
 Parse result: 244 of 256 models (all of L3, L5, L6, L7, L9, L11; 81/89 in
 L1). L1 models 42-49 are 8-16 byte records (not meshes). L4 (`i2.4`) uses a
