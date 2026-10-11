@@ -47,6 +47,7 @@ segments:
     start: 0x800
     vram: 0x80010000
     subsegments:
-      - [0x800, asm]
+      - [0x800, c, boot]
+      - [0x3F08, asm, psyq]
       - [0x17A00, data]
   - [0x1F800]
