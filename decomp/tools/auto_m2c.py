@@ -44,6 +44,40 @@ def m2c(asm_path, ctx_path):
     return res.stdout.strip()
 
 
+DECL_NAME_RE = re.compile(r"(\w+)\s*(?:\(|\[|;|=)")
+
+
+DECL_MARKER = "/* --- declarations (auto_m2c appends here) --- */"
+
+
+def split_decls(code, src_text):
+    """Split m2c output into (new declarations, function body).
+
+    Declarations for symbols SRC already declares or defines are dropped, so
+    the remaining ones can be added to the shared block at the top of SRC.
+    """
+    known = INCLUDE_RE.sub("", src_text)
+    decls, body, in_body = [], [], False
+    for line in code.splitlines():
+        if not in_body and line.rstrip().endswith("{"):
+            in_body = True
+        if in_body:
+            body.append(line)
+        elif line.strip():
+            m = DECL_NAME_RE.search(line.split("/*")[0])
+            if not (m and re.search(rf"\b{re.escape(m.group(1))}\b", known)):
+                decls.append(line)
+    return decls, "\n".join(body)
+
+
+def substitute(src_text, include_line, code):
+    decls, body = split_decls(code, src_text)
+    text = src_text.replace(include_line, body, 1)
+    if decls:
+        text = text.replace(DECL_MARKER, DECL_MARKER + "\n" + "\n".join(decls), 1)
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
@@ -74,7 +108,7 @@ def main():
         if code is None:
             failed.append((name, size, "m2c"))
             continue
-        src.write_text(text.replace(line, code, 1))
+        src.write_text(substitute(text, line, code))
         if build_ok():
             matched.append((name, size))
             print(f"MATCH  {name} ({size:#x})", flush=True)
