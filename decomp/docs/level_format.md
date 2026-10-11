@@ -67,28 +67,44 @@ L11 154/1/0/1/0.
 
 ### Models (group B)
 
+Decoded from ENGINE1 `func_80039D34` (draw) and `func_8003A184` (vertex
+transform, render mode 0); parser: `tools/level_models.py`.
+
 Game objects carry a 1-based model index at `+0x34`; `func_80039BEC` loads
-GTE rotation/translation (`ctc2`) and draws the model through a render
-function picked from `D_80069CDC[obj->+0x23]`. Model records are 4-byte
-aligned and packed back to back. Known so far: `+0x02` u8 is used as
-`n` with an `n*8`-byte block after which `+0x0A` holds an s16 count; `+0x03`
-u8 goes to `func_8003AA08` (likely a size/radius for culling). The inner
-layout (vertices/primitives) is not decoded yet -- next: `func_80039D34`
-and the render table at `D_80069CDC`.
+GTE rotation/translation and calls the draw function, which picks a vertex
+transform from `D_80069CDC[obj->+0x23]` (8 render modes).
 
-### CLUT block
+Model record (4-byte aligned):
 
-32 rows of 256 entries. Each row holds 16 palettes of 16 colours; entry 0 of
-every palette is 0 (transparent), so the textures are **4-bit indexed**.
-Row 31 is not a palette (the field `0x20` table overlaps it), leaving
-31 x 16 = 496 candidate palettes. Simple levels (L1, L6, L7, L11) appear to
-use only row 0; L3, L4, L5 and L9 use many rows (heuristic result from
-`tools/guess_palettes.py`; the real assignment is in the RAM part).
+| off  | type | meaning                                                     |
+|------|------|-------------------------------------------------------------|
+| 0x00 | u16  | start of the model's faces in the face pool, in 4-byte words |
+| 0x02 | u8   | n: count of 8-byte records at +0x0A (per-part data, undecoded) |
+| 0x03 | u8   | size for culling (`func_8003AA08`)                           |
+| 0x04 | u16  | animation/matrix parameter (`func_8003A5F4`); 0 = static     |
+| 0x0A | n*8  | records                                                      |
+| ...  |      | per part: s16 vertex count (1..64), then u32 packed vertices; 2 bytes between parts |
 
-Observed order in the file: RAM part, CLUT block (its last 0x100 bytes overlap
-the `0x20` table), texture block 1, texture block 2.
+Packed vertex: bits 0-7 z (s8), 8-23 x (s16), 24-31 y (s8). The GTE result
+goes to the scratchpad at `0x1F800018 + 8*index`.
 
-Open points:
-- Data past the loaded size (e.g. 0x30800 bytes in L1) is loaded elsewhere.
-- In L7 texture block 2 extends past the loaded size (0x83558 vs 0x6F800).
-- The RAM part (object layout, collision, ...) is still to be decoded.
+Face pool (header rel 0x24), per part:
+- u16 face count, u16 info (high byte: extra index bytes copied to an
+  attachment buffer, low byte: non-zero = another part follows)
+- faces, 8 bytes each:
+  - u32: four 6-bit vertex indices (bits 0-23) + flags (bits 24-31);
+    bit 3 = quad, other bits select back-face handling
+  - u32: if the top byte is 0, a byte offset into the texture-record block
+    (header rel 0x28); otherwise a flat face
+- `info >> 8` extra bytes, then align to 4
+
+Texture record (12 bytes) -> GPU `POLY_FT4` (code 0x09 words):
+u16 uv0, u16 CLUT column bits; u16 uv1, u16 texpage; u16 uv2, u16 uv3.
+The CLUT row is **not** stored: the draw code ORs `(shade << 6) + 0x7830`
+(VRAM 768,480 + shade rows) into the CLUT field, shade = clamp(depth >> 5,
+1, 29). So CLUT rows 0..30 are brightness/depth levels of the same 16
+palettes, and a face's palette is selected by the column bits in its record.
+
+Parse result: 244 of 256 models (all of L3, L5, L6, L7, L9, L11; 81/89 in
+L1). L1 models 42-49 are 8-16 byte records (not meshes). L4 (`i2.4`) uses a
+different model layout.
