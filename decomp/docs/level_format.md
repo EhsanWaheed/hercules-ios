@@ -46,6 +46,15 @@ All `rel` fields are offsets relative to the field's own position.
 | 0x2C | u32  | looks like an RGB colour (`0x4D4D4D` in L0) -- ambient/fog?     |
 | 0x44 | u32  | entry count (69 in L0) for the u16-pair table that follows     |
 
+### CLUT block
+
+32 rows of 256 entries. Each row holds 16 palettes of 16 colours; entry 0 of
+every palette is 0 (transparent), so the textures are **4-bit indexed**.
+Row 31 is not a palette (the field `0x20` table overlaps it), leaving
+31 x 16 = 496 candidate palettes. Simple levels (L1, L6, L7, L11) appear to
+use only row 0; L3, L4, L5 and L9 use many rows (heuristic result from
+`tools/guess_palettes.py`; the real assignment is in the RAM part).
+
 Observed order in the file: RAM part, CLUT block (its last 0x100 bytes overlap
 the `0x20` table), texture block 1, texture block 2.
 
