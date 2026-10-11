@@ -11,6 +11,7 @@ typedef struct {
 } SoundState;
 
 /* --- declarations (auto_m2c appends here) --- */
+void func_80012494(s32 arg0, s32 arg1);
 M2C_UNK CdRead(s32, s32, M2C_UNK);                  /* extern */
 M2C_UNK CdReadSync(M2C_UNK, M2C_UNK);               /* extern */
 extern u8 D_80035108;
@@ -105,7 +106,20 @@ void func_80010B8C(void) {
     SsSetMVol(0x69, 0x69);
 }
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010BD0);
+void func_80010BD0(s32 arg0) {
+    s32 seq = D_80035F48.seqAccess;
+    /* do/while (0): the original likely used a statement macro here */
+    do {
+        D_80035F7C = 1;
+    } while (0);
+    if (seq != -1) {
+        if (arg0 == 0) {
+            D_80035F78 = 0x69;
+        } else {
+            D_80035F78 = 0;
+        }
+    }
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80010C18);
 
@@ -203,7 +217,9 @@ INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012390);
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012424);
 
-INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012474);
+void func_80012474(s32 arg0) {
+    func_80012494(arg0, 0);
+}
 
 INCLUDE_ASM("asm/main/nonmatchings/boot", func_80012494);
 

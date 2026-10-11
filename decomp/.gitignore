@@ -6,3 +6,4 @@ assets/
 *.ld
 __pycache__/
 .splache
+permuter/

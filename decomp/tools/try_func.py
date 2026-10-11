@@ -58,7 +58,7 @@ def compiled(obj, name):
 
 def mask(word, text):
     op = word >> 26
-    if op == 3:                       # jal: target filled by linker
+    if op in (2, 3):                  # j/jal: target filled by linker
         return word & ~0x03FFFFFF
     if "%hi" in text or "%lo" in text or op == 0x0F:   # lui / %lo users
         return word & ~0xFFFF
