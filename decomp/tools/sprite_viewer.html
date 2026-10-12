@@ -155,7 +155,13 @@ function render() {
     const ax = 8 + box.l * sc, ay = 8 + box.t * sc;          // anchor position on canvas
     if (f) {
       const img = p.imgs[f.frame];
-      if (img) {
+      const stale = img && !p.original &&
+        (img.naturalWidth !== f.size[0] * 4 || img.naturalHeight !== f.size[1] * 4);
+      if (stale) {
+        ctx.fillStyle = "#ff6b6b"; ctx.font = "14px system-ui, sans-serif";
+        ctx.fillText("veraltet: passt nicht zum Original", 12, 22);
+        ctx.fillText("chaiNNer neu laufen lassen", 12, 42);
+      } else if (img) {
         // original pixels stay sharp; upscaled images are drawn smoothly at their size
         ctx.imageSmoothingEnabled = !p.original;
         ctx.save();
