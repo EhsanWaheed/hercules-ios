@@ -1,0 +1,54 @@
+# Autofilled by tools/new_project_layout/probe_disc.py from your legal dump.
+# Review before shipping. Runtime quirks / overlay seeds still need hand work.
+
+[game]
+name = "Hercules"
+id = "SCES-00893"
+players = 1
+exe = "disc/SCES_008.93"
+disc = "disc/Disneys Hercules Action-Spiel (Germany).cue"
+load_address = "0x80010000"
+entry_pc = "0x80013710"
+text_size = "0x0001F000"
+stack_base = "0x801FFFF0"
+
+# Digests are for data Track 01 (first BINARY FILE / TRACK 01).
+[prepare_disc]
+out_dir = "disc"
+bin_name = "Disneys Hercules Action-Spiel (Germany).bin"
+cue_name = "Disneys Hercules Action-Spiel (Germany).cue"
+boot_exe = "SCES_008.93"
+known_sizes = [393788304]
+known_md5 = [
+  "ec808ac8484dbc50e56866c1fdff3132",
+]
+known_sha1 = [
+  "a67a615f979fb3b4108fd4c75018ac9ebb960d2f",
+]
+known_crc32 = [
+  "9a51eebf",
+]
+
+[recompiler]
+seeds = "seeds/ghidra_funcs.txt"
+out_dir = "generated"
+strict = true
+
+[runtime]
+window_title = "Hercules Recompiled"
+memcard_dir = "saves"
+overlay_cache = true
+
+[video]
+renderer = "opengl"
+aspect_ratio = "4:3"
+
+[controller]
+default_mode = "digital"
+
+# Online mount gate: digests + track count + optional TOC fingerprint
+# (see docs/NETPLAY.md).
+[netplay]
+require_cue = true
+required_tracks = 1
+required_disc_fp = "02fa54de2a5a25f982d23796f4013c55a659f96a32cf8a5427b6db9ec4bdf50a"

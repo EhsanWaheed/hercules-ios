@@ -1,0 +1,13 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Hercules",
+  "system": "PS1",
+  "type": "recomp",
+  "toolchain": "psxrecomp",
+  "status": "exploring",
+  "project": "HerculesRecomp",
+  "original": {
+    "region": "Europe",
+    "serial": "SCES-00893"
+  }
+}
