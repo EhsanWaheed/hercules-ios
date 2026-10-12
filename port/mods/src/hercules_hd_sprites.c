@@ -69,6 +69,19 @@ typedef struct {
     uint8_t w, h;   /* pixels (bytes) */
 } Block;
 
+/* Objects seen drawn opaque. The game also draws Hercules semi-transparent
+ * for a while after a hit (the post-hit flash); an object that was opaque
+ * before is no effect, so its blocks keep getting HD. */
+#define OPAQUE_SEEN 64
+static uint32_t s_opaque[OPAQUE_SEEN];
+static uint32_t s_opaque_next;
+
+static int seen_opaque(uint32_t obj) {
+    for (uint32_t i = 0; i < OPAQUE_SEEN; i++)
+        if (s_opaque[i] == obj) return 1;
+    return 0;
+}
+
 static Block s_blocks[MAX_BLOCKS];
 static uint8_t s_pixels[MAX_BLOCKS][32 * 32];
 static uint32_t s_count;
@@ -103,10 +116,19 @@ static void on_decode(struct CPUState* cpu, uint32_t address) {
      * sparkles of SD1/S1.2) are always uploaded; tools/sprite_texpack.py
      * leaves the effect frames among them out of the pack. */
     const uint32_t sp = cpu->gpr[REG_SP];
-    if (psx_mod_read_word(psx_mod_read_word(sp + DECODE_FRAME_RA)) == OBJECT_CALL_AFTER &&
-        (psx_mod_read_word(psx_mod_read_word(sp + DECODE_FRAME_S0) + OBJ_FLAGS) & OBJ_FLAG_SEMI)) {
-        psx_mod_counter_add("hercules.hd-sprites.effect_native", 1);
-        return;
+    if (psx_mod_read_word(psx_mod_read_word(sp + DECODE_FRAME_RA)) == OBJECT_CALL_AFTER) {
+        const uint32_t obj = psx_mod_read_word(sp + DECODE_FRAME_S0);
+        if (!(psx_mod_read_word(obj + OBJ_FLAGS) & OBJ_FLAG_SEMI)) {
+            if (!seen_opaque(obj)) {
+                s_opaque[s_opaque_next] = obj;
+                s_opaque_next = (s_opaque_next + 1) % OPAQUE_SEEN;
+            }
+        } else if (!seen_opaque(obj)) {
+            psx_mod_counter_add("hercules.hd-sprites.effect_native", 1);
+            return;
+        } else {
+            psx_mod_counter_add("hercules.hd-sprites.flash_hd", 1);
+        }
     }
     const uint32_t queue_index = cpu->gpr[REG_T1];
     const uint32_t quadrant = cpu->gpr[REG_S1] & 3u;
@@ -174,6 +196,7 @@ static void on_flush(struct CPUState* cpu, uint32_t address) {
 }
 
 static void on_activate(void) {
+    memset(s_opaque, 0, sizeof(s_opaque));
     s_count = 0;
     s_owner = NULL;
     s_in_flush = 0;
