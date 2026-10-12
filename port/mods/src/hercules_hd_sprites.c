@@ -1,10 +1,11 @@
-/* HD sprites for Hercules (SCES-00893), ENGINE1 sprite cache.
+/* HD sprites for Hercules (SCES-00893): sprite caches of ENGINE1, ENGINE3
+ * and TITLE.
  *
  * The game decodes sprite blocks (8..32 px, 8-bit indices) into 16x16
  * quadrants of 32x32 VRAM fields and uploads whole fields, merged into
- * 32-pixel-wide columns, with one LoadImage per run (func_8004023C). The
- * quadrants it did not touch keep stale data, so an upload hash almost never
- * repeats (see hercules/docs/sprite_format.md, "VRAM sprite cache").
+ * 32-pixel-wide columns, with one LoadImage per run (ENGINE1 func_8004023C).
+ * The quadrants it did not touch keep stale data, so an upload hash almost
+ * never repeats (see hercules/docs/sprite_format.md, "VRAM sprite cache").
  *
  * This plugin records every block as it is decoded and, right after the
  * game's column upload, uploads each block once more as its own w x h
@@ -18,16 +19,30 @@
 
 #include <string.h>
 
-/* ENGINE1 (loaded at 0x80038350; ENGINE3/TITLE share the range, so every
- * hook checks the instruction words first). */
-#define DECODE_SITE     0x8003FD7Cu /* lw $a0, 0x290C($gp): staging base */
-#define DECODE_WORD     0x8F84290Cu
-#define FLUSH_FUNC      0x8004023Cu
-#define FLUSH_WORD0     0x8F82005Cu /* lw $v0, 0x5C($gp) */
-#define FLUSH_CALL      0x80040304u /* jal LoadImage */
+#define FLUSH_WORD0     0x8F82005Cu /* lw $v0, 0x5C($gp) (TITLE: 0x170) */
+#define FLUSH_CALL_OFF  0xC8u       /* jal LoadImage inside the flush */
 #define FLUSH_CALL_WORD 0x0C00632Bu
-#define UPLOAD_QUEUE    0x80072A6Cu /* u16 field ids */
 #define DRAW_SYNC       0x800189E8u /* PsyQ DrawSync (main executable) */
+
+/* All three files load at 0x80038350 and carry the same two functions,
+ * relinked (tools/find_func.py): only data addresses and gp offsets differ.
+ * Every hook checks instruction words, since another file may be resident. */
+typedef struct {
+    const char* name;
+    uint32_t decode_site;  /* lw $a0, staging($gp) before a cell is decoded */
+    uint32_t decode_word;
+    uint32_t staging_gp;   /* gp offset of the staging buffer pointer */
+    uint32_t queue;        /* u16 field ids queued for upload */
+    uint32_t flush;        /* column upload function */
+    uint32_t flush_word0;
+} Module;
+
+static const Module k_modules[] = {
+    {"ENGINE1", 0x8003FD7Cu, 0x8F84290Cu, 0x290Cu, 0x80072A6Cu, 0x8004023Cu, FLUSH_WORD0},
+    {"ENGINE3", 0x8003F18Cu, 0x8F8432C0u, 0x32C0u, 0x80066018u, 0x8003F64Cu, FLUSH_WORD0},
+    {"TITLE",   0x8005418Cu, 0x8F843ACCu, 0x3ACCu, 0x8008BD58u, 0x8005464Cu, 0x8F820170u},
+};
+#define MODULE_COUNT (sizeof(k_modules) / sizeof(k_modules[0]))
 
 #define REG_T1 9
 #define REG_S1 17
@@ -46,6 +61,7 @@ typedef struct {
 static Block s_blocks[MAX_BLOCKS];
 static uint8_t s_pixels[MAX_BLOCKS][32 * 32];
 static uint32_t s_count;
+static const Module* s_owner; /* module the recorded blocks belong to */
 static int s_in_flush;
 
 static int option_true(const char* id, int fallback) {
@@ -54,10 +70,16 @@ static int option_true(const char* id, int fallback) {
     return strcmp(value, "true") == 0;
 }
 
-/* Before func_8003F9D4 decodes a cell: $t1 = queue index, $s1 = quadrant
- * (bit 0 right, bit 1 bottom), $fp = cell record (byte 0: size). */
+/* Before a cell is decoded: $t1 = queue index, $s1 = quadrant (bit 0 right,
+ * bit 1 bottom), $fp = cell record (byte 0: size). The runtime has already
+ * checked the instruction word, so the module is resident. */
 static void on_decode(struct CPUState* cpu, uint32_t address) {
-    (void)address;
+    const Module* m = NULL;
+    for (uint32_t i = 0; i < MODULE_COUNT; i++)
+        if ((k_modules[i].decode_site & 0x1FFFFFFFu) == (address & 0x1FFFFFFFu)) m = &k_modules[i];
+    if (!m) return;
+    if (s_owner != m) s_count = 0; /* another file was loaded meanwhile */
+    s_owner = m;
     if (s_count >= MAX_BLOCKS) {
         psx_mod_counter_add("hercules.hd-sprites.overflow", 1);
         return;
@@ -65,8 +87,8 @@ static void on_decode(struct CPUState* cpu, uint32_t address) {
     const uint32_t queue_index = cpu->gpr[REG_T1];
     const uint32_t quadrant = cpu->gpr[REG_S1] & 3u;
     const uint8_t size = psx_mod_read_byte(cpu->gpr[REG_FP]);
-    const uint16_t field = psx_mod_read_half(UPLOAD_QUEUE + 2u * queue_index);
-    const uint32_t staging = psx_mod_read_word(cpu->gpr[REG_GP] + 0x290Cu);
+    const uint16_t field = psx_mod_read_half(m->queue + 2u * queue_index);
+    const uint32_t staging = psx_mod_read_word(cpu->gpr[REG_GP] + m->staging_gp);
 
     Block* b = &s_blocks[s_count++];
     b->src = staging + (queue_index << 10) + ((quadrant & 2u) << 8) + ((quadrant & 1u) << 4);
@@ -97,29 +119,38 @@ static void upload_blocks(uint32_t staging) {
     s_count = 0;
 }
 
-/* func_8004023C: run the game's flush, wait for its LoadImages, then add
+/* Column upload: run the game's flush, wait for its LoadImages, then add
  * the per-block uploads. */
 static void on_flush(struct CPUState* cpu, uint32_t address) {
-    (void)address;
     if (s_in_flush) return; /* our own nested call runs the original body */
-    if (psx_mod_read_word(FLUSH_FUNC) != FLUSH_WORD0 ||
-        psx_mod_read_word(FLUSH_CALL) != FLUSH_CALL_WORD) {
+    const Module* m = NULL;
+    for (uint32_t i = 0; i < MODULE_COUNT; i++) {
+        const Module* k = &k_modules[i];
+        if ((k->flush & 0x1FFFFFFFu) == (address & 0x1FFFFFFFu) &&
+            psx_mod_read_word(k->flush) == k->flush_word0 &&
+            psx_mod_read_word(k->flush + FLUSH_CALL_OFF) == FLUSH_CALL_WORD &&
+            psx_mod_read_word(k->decode_site) == k->decode_word)
+            m = k;
+    }
+    if (!m) {
         psx_mod_counter_add("hercules.hd-sprites.foreign_code", 1);
         return;
     }
     const uint32_t ra = cpu->gpr[REG_RA];
     s_in_flush = 1;
-    (void)psx_mod_call_guest(cpu, FLUSH_FUNC, ra, 0, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, m->flush, ra, 0, 0, 0, 0);
     s_in_flush = 0;
-    if (s_count) {
+    if (s_count && s_owner == m) {
         (void)psx_mod_call_guest(cpu, DRAW_SYNC, ra, 0, 0, 0, 0);
-        upload_blocks(psx_mod_read_word(cpu->gpr[REG_GP] + 0x290Cu));
+        upload_blocks(psx_mod_read_word(cpu->gpr[REG_GP] + m->staging_gp));
     }
+    s_count = 0;
     (void)psx_mod_finish_function(cpu);
 }
 
 static void on_activate(void) {
     s_count = 0;
+    s_owner = NULL;
     s_in_flush = 0;
     (void)psx_mod_set_hd_texture_pack("pack", option_true("replacements", 1),
                                       option_true("dump", 0));
@@ -127,14 +158,18 @@ static void on_activate(void) {
 
 static void on_savestate(void) {
     s_count = 0; /* recorded blocks belong to the abandoned timeline */
+    s_owner = NULL;
     s_in_flush = 0;
 }
 
 PSX_MOD_CONSTRUCTOR(hercules_register_hd_sprites) {
     (void)psx_mod_register_activation_plugin("hercules.hd-sprites", on_activate);
     (void)psx_mod_register_savestate_plugin("hercules.hd-sprites", on_savestate);
-    (void)psx_mod_register_instruction_plugin("hercules.hd-sprites", DECODE_SITE,
-                                              DECODE_WORD, on_decode);
-    (void)psx_mod_register_function_entry_plugin("hercules.hd-sprites", FLUSH_FUNC,
-                                                 on_flush);
+    for (uint32_t i = 0; i < MODULE_COUNT; i++) {
+        (void)psx_mod_register_instruction_plugin("hercules.hd-sprites",
+                                                  k_modules[i].decode_site,
+                                                  k_modules[i].decode_word, on_decode);
+        (void)psx_mod_register_function_entry_plugin("hercules.hd-sprites",
+                                                     k_modules[i].flush, on_flush);
+    }
 }
