@@ -227,7 +227,7 @@ Prüft nebenbei die Zerlege-Logik, die der Port später braucht.
 2. objdiff-Bericht einrichten (Phase 0).
 3. Ladeadressen + splat für ENGINE3, TITLE, OV0–OV11 (Phase 1).
 4. PsyQ-Signaturen (Phase 1.3).
-5. Recompiler-Test mit PSXRecomp (Phase 2a) → Entscheidung 2a/2b.
+5. ~~Recompiler-Test mit PSXRecomp (Phase 2a)~~ – läuft (Level 1 spielbar) → **2a**.
 6. Plattformschicht schrittweise (Phase 3), Decomp parallel (Phase 4).
 
 ## Quellen
