@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprite Viewer</title>
+<style>
+  :root {
+    --bg: #15171c; --panel: #1f232b; --line: #343a46; --text: #e6e8ec; --muted: #9aa3b2;
+    --accent: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center;
+           padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+           position: sticky; top: 0; z-index: 1; }
+  label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  select, input, button { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+                          border-radius: 6px; padding: 4px 8px; font: inherit; }
+  input[type=number] { width: 72px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  #status { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+  main { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+           padding: 8px; }
+  figcaption { color: var(--muted); padding: 0 2px 6px; font-size: 13px; }
+  canvas { display: block; border-radius: 4px; }
+  .hint { color: var(--muted); padding: 0 16px 16px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <label>Ordner <select id="folder"></select></label>
+  <label>Bild von <input id="from" type="number" min="1" value="1"></label>
+  <label>bis <input id="to" type="number" min="1" value="1"></label>
+  <label>Bilder/s <select id="fps">
+    <option value="12.5">12,5</option><option value="25" selected>25 (Spiel)</option>
+    <option value="50">50</option><option value="6">6 (langsam)</option></select></label>
+  <label>Ansicht <select id="scale">
+    <option value="1080" selected>Spielgröße 1080p</option>
+    <option value="hd1">HD 1:1</option></select></label>
+  <label>Hintergrund <select id="bg">
+    <option value="checker">Schachbrett</option><option value="#3b6fb6">Himmel</option>
+    <option value="#4f7a35">Gras</option><option value="#111">Dunkel</option>
+    <option value="#d9d4c7">Hell</option></select></label>
+  <label><input id="flip" type="checkbox"> gespiegelt</label>
+  <button id="prev" title="Pfeil links">◀</button>
+  <button id="play" title="Leertaste">⏸ Pause</button>
+  <button id="next" title="Pfeil rechts">▶</button>
+  <span id="status"></span>
+</header>
+<main id="panels"></main>
+<p class="hint">Leertaste: Abspielen/Pause · Pfeiltasten: Einzelbild · Alle Ansichten sind am Ankerpunkt
+  des Spiels ausgerichtet (rotes Kreuz). Die Animationstabellen sind noch nicht entschlüsselt, daher
+  wird der gewählte Bereich aufeinanderfolgender Bilder abgespielt.</p>
+<script>
+"use strict";
+const GAME_LINES = 256;                 // PAL frame height
+const SCREEN_LINES = 1080;
+const $ = id => document.getElementById(id);
+let index, meta, frames = [], panels = [], pos = 0, playing = true, timer = null;
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + ": " + r.status);
+  return r.json();
+}
+
+function loadImage(src) {
+  return new Promise(res => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => res(null);
+    img.src = src;
+  });
+}
+
+function frameFile(k) {
+  // follow same_as references; skip empty slots
+  let f = meta.frames.find(x => x.frame === k);
+  if (f && f.same_as) f = meta.frames.find(x => x.frame === f.same_as);
+  return f && f.png ? f : null;
+}
+
+async function loadFolder(name) {
+  const entry = index.folders[name];
+  meta = await getJSON(entry.meta);
+  const sources = [["Original", "assets/sprites/" + name]].concat(Object.entries(entry.variants));
+  const nums = meta.frames.filter(f => !f.empty).map(f => f.frame);
+  $("from").value = Math.min(...nums); $("to").value = Math.max(...nums);
+  $("from").max = $("to").max = Math.max(...nums);
+  panels = [];
+  for (const [label, dir] of sources) {
+    const imgs = {};
+    await Promise.all(meta.frames.filter(f => f.png).map(async f => {
+      imgs[f.frame] = await loadImage(`${dir}/${f.png}`);
+    }));
+    panels.push({ label, imgs, original: label === "Original" });
+  }
+  buildPanels();
+  setRange();
+}
+
+function sizes() {
+  // bounding box of the selected frames around the anchor, in original pixels
+  let l = 0, t = 0, r = 1, b = 1;
+  for (const k of frames) {
+    const f = frameFile(k); if (!f) continue;
+    l = Math.max(l, f.anchor[0]); t = Math.max(t, f.anchor[1]);
+    r = Math.max(r, f.size[0] - f.anchor[0]); b = Math.max(b, f.size[1] - f.anchor[1]);
+  }
+  return { l, t, r, b };
+}
+
+function pixelScale(p) {
+  const game = SCREEN_LINES / GAME_LINES;                 // ~4.22 screen px per game px
+  if ($("scale").value === "1080") return game;
+  return p.original ? 4 : 4;                               // HD 1:1 = upscaled pixels 1:1
+}
+
+function buildPanels() {
+  const main = $("panels"); main.innerHTML = "";
+  for (const p of panels) {
+    const fig = document.createElement("figure");
+    const cap = document.createElement("figcaption"); cap.textContent = p.label;
+    const c = document.createElement("canvas");
+    fig.append(cap, c); main.append(fig);
+    p.canvas = c; p.ctx = c.getContext("2d");
+  }
+}
+
+function drawBackground(ctx, w, h) {
+  const bg = $("bg").value;
+  if (bg !== "checker") { ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h); return; }
+  const s = 16;
+  for (let y = 0; y < h; y += s) for (let x = 0; x < w; x += s) {
+    ctx.fillStyle = ((x / s + y / s) & 1) ? "#2a2e36" : "#353a44"; ctx.fillRect(x, y, s, s);
+  }
+}
+
+function render() {
+  if (!frames.length) return;
+  const k = frames[pos % frames.length];
+  const f = frameFile(k);
+  const box = sizes();
+  for (const p of panels) {
+    const sc = pixelScale(p);
+    const W = Math.ceil((box.l + box.r) * sc) + 16, H = Math.ceil((box.t + box.b) * sc) + 16;
+    if (p.canvas.width !== W || p.canvas.height !== H) { p.canvas.width = W; p.canvas.height = H; }
+    const ctx = p.ctx;
+    drawBackground(ctx, W, H);
+    const ax = 8 + box.l * sc, ay = 8 + box.t * sc;          // anchor position on canvas
+    if (f) {
+      const img = p.imgs[f.frame];
+      if (img) {
+        // original pixels stay sharp; upscaled images are drawn smoothly at their size
+        ctx.imageSmoothingEnabled = !p.original;
+        ctx.save();
+        if ($("flip").checked) { ctx.translate(ax, 0); ctx.scale(-1, 1); ctx.translate(-ax, 0); }
+        ctx.drawImage(img, ax - f.anchor[0] * sc, ay - f.anchor[1] * sc,
+                      f.size[0] * sc, f.size[1] * sc);
+        ctx.restore();
+      }
+    }
+    ctx.strokeStyle = "rgba(255,80,80,.8)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(ax - 6, ay + .5); ctx.lineTo(ax + 6, ay + .5);
+    ctx.moveTo(ax + .5, ay - 6); ctx.lineTo(ax + .5, ay + 6); ctx.stroke();
+  }
+  $("status").textContent = `Bild ${k}` + (f && f.frame !== k ? ` (= ${f.frame})` : "")
+    + ` · ${pos % frames.length + 1}/${frames.length}` + (f ? ` · Palette ${f.palette}` : " · leer");
+}
+
+function setRange() {
+  const a = +$("from").value, b = +$("to").value;
+  frames = meta.frames.filter(f => !f.empty && f.frame >= Math.min(a, b) && f.frame <= Math.max(a, b))
+                      .map(f => f.frame);
+  pos = 0; restart(); render();
+}
+
+function restart() {
+  clearInterval(timer);
+  if (playing) timer = setInterval(() => { pos = (pos + 1) % Math.max(frames.length, 1); render(); },
+                                   1000 / +$("fps").value);
+  $("play").textContent = playing ? "⏸ Pause" : "▶ Abspielen";
+}
+
+function step(d) { playing = false; restart(); pos = (pos + d + frames.length) % frames.length; render(); }
+
+async function init() {
+  index = await getJSON("../build/sprite_index.json");
+  const names = Object.keys(index.folders);
+  names.sort((a, b) => (Object.keys(index.folders[b].variants).length > 0)
+                     - (Object.keys(index.folders[a].variants).length > 0) || a.localeCompare(b, "de", { numeric: true }));
+  for (const n of names) {
+    const o = document.createElement("option");
+    const v = Object.keys(index.folders[n].variants).length;
+    o.value = n; o.textContent = n + (v ? ` (${v} HD-Varianten)` : "");
+    $("folder").append(o);
+  }
+  $("folder").onchange = () => loadFolder($("folder").value);
+  $("from").onchange = $("to").onchange = setRange;
+  $("fps").onchange = restart;
+  $("scale").onchange = $("bg").onchange = $("flip").onchange = render;
+  $("play").onclick = () => { playing = !playing; restart(); };
+  $("prev").onclick = () => step(-1);
+  $("next").onclick = () => step(1);
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "INPUT") return;
+    if (e.code === "Space") { e.preventDefault(); playing = !playing; restart(); }
+    if (e.code === "ArrowLeft") step(-1);
+    if (e.code === "ArrowRight") step(1);
+  });
+  await loadFolder(names[0]);
+}
+init().catch(e => { $("status").textContent = "Fehler: " + e.message; });
+</script>
+</body>
+</html>
