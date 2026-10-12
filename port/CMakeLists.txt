@@ -66,3 +66,7 @@ foreach(_PSX_RUNTIME_CONFIG game.toml game_options.toml)
             VERBATIM)
     endif()
 endforeach()
+
+# Game-owned trusted plugins (activated by mods/preloaded manifests).
+target_sources(psx-runtime PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_hd_sprites.c")
