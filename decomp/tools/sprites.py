@@ -185,6 +185,56 @@ def palettes(data):
     return out
 
 
+def assemble(data, off, cells, palette):
+    """Place a frame's cells like ENGINE1 func_8003EA78 draws them.
+
+    The draw list starts 2 bytes before the cell records: s8 x0, s8 y0 (frame
+    offset from the object position), then per cell: size byte, draw size
+    (low nibble = width/8, high nibble signed = height/8), s8 dx, s8 dy with
+    dx/dy in 2-pixel units. A cell with size bit 7 has no pixels of its own:
+    it draws a sub-rectangle of the last decoded cell at
+    u = (size & 0xF) * 8, v = ((size >> 4) & 7) * 8.
+    Returns (rgba image or None, anchor [x, y] in the image, cell list,
+    count of opaque pixels drawn over opaque pixels).
+    """
+    import numpy as np
+
+    extra = struct.unpack_from("<b", data, off + 1)[0]
+    cells_at = off + 8 + 6 * max(extra, 0)
+    x0, y0 = struct.unpack_from("<bb", data, cells_at - 2)
+    pal = np.array(palette, dtype=np.uint8)
+    pieces, info, atlas = [], [], None
+    for c in cells:
+        size, dsz, dx, dy = struct.unpack("<BBbb", bytes.fromhex(c["desc"]))
+        dw = (dsz & 0xF) * 8
+        dh = (((dsz >> 4) ^ 8) - 8) * 8                  # signed high nibble
+        x, y = x0 + 2 * dx, y0 + 2 * dy
+        if c["pixels"] is not None:
+            atlas = np.frombuffer(c["pixels"], dtype=np.uint8).reshape(c["h"], c["w"]) & 0x1F
+            u = v = 0
+        else:
+            u, v = (size & 0xF) * 8, ((size >> 4) & 7) * 8
+        info.append({"desc": c["desc"], "x": x, "y": y, "w": dw, "h": dh, "u": u, "v": v,
+                     "own_pixels": c["pixels"] is not None})
+        if atlas is None or dw <= 0 or dh <= 0:
+            continue
+        src = atlas[v:v + dh, u:u + dw]
+        if src.size:
+            pieces.append((x, y, src))
+    if not pieces:
+        return None, None, info, 0
+    xs0 = min(x for x, _, p in pieces); ys0 = min(y for _, y, p in pieces)
+    xs1 = max(x + p.shape[1] for x, _, p in pieces); ys1 = max(y + p.shape[0] for _, y, p in pieces)
+    img = np.zeros((ys1 - ys0, xs1 - xs0, 4), dtype=np.uint8)
+    overlap = 0
+    for x, y, p in pieces:
+        region = img[y - ys0:y - ys0 + p.shape[0], x - xs0:x - xs0 + p.shape[1]]
+        mask = p != 0
+        overlap += int((mask & (region[..., 3] != 0)).sum())
+        region[mask] = pal[p][mask]
+    return img, [-xs0, -ys0], info, overlap
+
+
 def dump(out_root, paths):
     """Assemble every frame from its cells and write PNG + meta.json per file.
 
@@ -225,31 +275,14 @@ def dump(out_root, paths):
                 frames.append(info)
                 continue
             seen[key] = k
-            placed = []
-            for c in cells:
-                d = bytes.fromhex(c["desc"])
-                x, y = struct.unpack("<bb", d[2:4])
-                placed.append((x, y, c))
-            drawn = [(x, y, c) for x, y, c in placed if c["pixels"] is not None]
             info.update(head)
-            info["cells"] = [{"desc": c["desc"], "x": x, "y": y, "w": c["w"], "h": c["h"],
-                              "has_pixels": c["pixels"] is not None} for x, y, c in placed]
-            if drawn:
-                x0 = min(x for x, _, _ in drawn)
-                y0 = min(y for _, y, _ in drawn)
-                x1 = max(x + c["w"] for x, _, c in drawn)
-                y1 = max(y + c["h"] for _, y, c in drawn)
-                img = np.zeros((y1 - y0, x1 - x0, 4), dtype=np.uint8)
-                pal = np.array(pals[pal_index % len(pals)], dtype=np.uint8)
-                for x, y, c in drawn:
-                    idx = np.frombuffer(c["pixels"], dtype=np.uint8).reshape(c["h"], c["w"]) & 0x1F
-                    rgba = pal[idx]
-                    region = img[y - y0:y - y0 + c["h"], x - x0:x - x0 + c["w"]]
-                    mask = idx != 0
-                    region[mask] = rgba[mask]
+            img, anchor, cell_info, overlap = assemble(data, off, cells, pals[pal_index % len(pals)])
+            info["cells"] = cell_info
+            info["overlap_px"] = overlap
+            if img is not None:
                 info["png"] = f"f{k:04d}.png"
-                info["anchor"] = [-x0, -y0]        # anchor position inside the PNG
-                info["size"] = [x1 - x0, y1 - y0]
+                info["anchor"] = anchor          # anchor (object position) inside the PNG
+                info["size"] = [img.shape[1], img.shape[0]]
                 png_rgba(out / info["png"], img)
             frames.append(info)
         (out / "meta.json").write_text(json.dumps({"file": p, "frames": frames}, indent=1))

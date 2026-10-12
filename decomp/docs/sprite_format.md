@@ -85,11 +85,20 @@ Confirmed/assumed layout:
   palette = `20 00 20 00` + 32 colours, colour 0 = transparent
 - frame: u8 cell count, s8 X, 6 header bytes, X*6 extra bytes, cells (4 bytes
   each), then the compressed stream for all cells in order
-- cell: byte 0 size (bits 0-1 width/8-1, bits 2-3 height/8-1, bit 7 = no own
-  pixel data), byte 1 unknown (nibbles mostly mirror the size), bytes 2/3
-  signed x/y offset from the frame anchor
+- the draw list (ENGINE1 `func_8003EA78`) starts 2 bytes before the cell
+  records: s8 x0, s8 y0 = frame offset from the object position
+- cell record: byte 0 size (bits 0-1 width/8-1, bits 2-3 height/8-1 of the
+  decoded block; bit 7 = no own pixels), byte 1 drawn size (low nibble
+  width/8, high nibble signed height/8), s8 dx, s8 dy in **2-pixel units**
+  (cell at x0 + 2*dx, y0 + 2*dy)
+- a bit-7 cell draws a sub-rectangle of the last decoded block at
+  u = (size & 0xF) * 8, v = ((size >> 4) & 7) * 8 -- one decoded 32x32 block
+  acts as a small atlas for several pieces
 - pixel bytes: palette index in the low 5 bits
 
-Still to check visually / decode: bit-7 cells (37 frames have no drawn
-cells at all), meaning of byte 1, the 6 header bytes and X*6 extra bytes
-(likely bounding/hit boxes), palette outliers.
+Validation: with this placement all 10536 unique frames assemble with zero
+overlapping opaque pixels (the first version, which used dx/dy as 1-pixel
+offsets of the following cell and skipped bit-7 cells, produced scrambled
+frames). Still open: the 6 bytes per X block and the 4-byte box before the
+draw list (likely bounding/hit boxes, used by `func_8004495C`), palette
+outliers, animation tables.
