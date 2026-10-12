@@ -63,7 +63,18 @@ Funktionsgrenzen, Symbolen und Ladeadresse.
 5. **Ergebnis prüfen:** jede Datei baut wieder byte-identisch (`make check`
    pro Datei).
 
-**Stand 12.10.:** Schritte 1, 2, 3 und 5 erledigt. PsyQ 3.7 in allen drei
+**Stand 12.10.:** Schritte 1–5 erledigt.
+Schritt 4: `tools/indirect_targets.py` → `config/indirect_targets.json` (pro
+Datei: Funktionsanfänge, Sprungtabellen mit Zielen, Funktionen mit genommener
+Adresse, übrige `jr`). 142 Sprungtabellen / 2.603 Fälle, alle von spimdisasm
+gefunden und vollständig (Einträge = `sltiu`-Grenze); jedes `jr` ≠ `$ra` ist
+Sprungtabelle, BIOS-Stummel (`jr $t2`) oder `StopCARD2` (feste Adresse).
+495 `jalr`, 1.398 Funktionen mit genommener Adresse (Datenwörter + lui/addiu),
+auch über Dateigrenzen (Engine-Daten → Overlay-Code und zurück), keine
+mehrdeutig. In den Engines und der Startdatei liegen die Tabellen im
+Datenteil als rohe Wörter; vor dem Decomp einer Datei in rodata verschieben.
+Als Rückfall braucht der Recompiler trotzdem eine Tabelle aller Funktionsanfänge
+(Zeiger können auch aus Level-Dateien kommen). PsyQ 3.7 in allen drei
 Engines (wie in der Startdatei); Namen in `config/symbol_addrs.{engine1,engine3,title}.txt`.
 Die Engines haben nur 23–69 eigene Bibliotheksfunktionen, die Overlays keine
 (Treffer dort sind kurze Allerwelts-Signaturen). Der Spielcode ruft
