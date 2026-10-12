@@ -35,6 +35,7 @@
   <label>Ordner <select id="folder"></select></label>
   <label>Bild von <input id="from" type="number" min="1" value="1"></label>
   <label>bis <input id="to" type="number" min="1" value="1"></label>
+  <span id="total" style="color: var(--muted)"></span>
   <label>Bilder/s <select id="fps">
     <option value="12.5">12,5</option><option value="25" selected>25 (Spiel)</option>
     <option value="50">50</option><option value="6">6 (langsam)</option></select></label>
@@ -61,6 +62,11 @@ const GAME_LINES = 256;                 // PAL frame height
 const SCREEN_LINES = 1080;
 const $ = id => document.getElementById(id);
 let index, meta, frames = [], panels = [], pos = 0, playing = true, timer = null;
+let byFrame = new Map();                 // frame number -> metadata (same_as resolved)
+const PRELOAD_AHEAD = 6;                 // frames fetched ahead of the playhead
+const MAX_PARALLEL = 4;                  // concurrent image requests
+const DEFAULT_RANGE = 24;                // frames selected when a folder opens
+const queue = []; let active = 0;
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -68,38 +74,52 @@ async function getJSON(url) {
   return r.json();
 }
 
-function loadImage(src) {
-  return new Promise(res => {
+// Images are loaded on demand through a small queue, never a whole folder at
+// once: a large sprite file times several 4x variants can exhaust the browser.
+function pump() {
+  while (active < MAX_PARALLEL && queue.length) {
+    const { panel, frame } = queue.shift();
+    if (panel.imgs.has(frame)) continue;
     const img = new Image();
-    img.onload = () => res(img);
-    img.onerror = () => res(null);
-    img.src = src;
-  });
+    panel.imgs.set(frame, "loading");
+    active++;
+    img.onload = () => { panel.imgs.set(frame, img); active--; render(); pump(); };
+    img.onerror = () => { panel.imgs.set(frame, null); active--; pump(); };
+    img.src = `${panel.dir}/${byFrame.get(frame).png}`;
+  }
+}
+
+function request(frame, urgent) {
+  for (const p of panels) {
+    if (p.imgs.has(frame)) continue;
+    const job = { panel: p, frame };
+    urgent ? queue.unshift(job) : queue.push(job);
+  }
+  pump();
 }
 
 function frameFile(k) {
-  // follow same_as references; skip empty slots
-  let f = meta.frames.find(x => x.frame === k);
-  if (f && f.same_as) f = meta.frames.find(x => x.frame === f.same_as);
-  return f && f.png ? f : null;
+  return byFrame.get(k) || null;
 }
 
 async function loadFolder(name) {
   const entry = index.folders[name];
   meta = await getJSON("/" + entry.meta);
+  const raw = new Map(meta.frames.map(f => [f.frame, f]));
+  byFrame = new Map();
+  for (const f of meta.frames) {
+    const t = f.same_as ? raw.get(f.same_as) : f;          // follow duplicates
+    if (t && t.png) byFrame.set(f.frame, t);
+  }
+  queue.length = 0;
   const sources = [["Original", "/assets/sprites/" + name]]
     .concat(Object.entries(entry.variants).map(([l, d]) => [l, "/" + d]));
-  const nums = meta.frames.filter(f => !f.empty).map(f => f.frame);
-  $("from").value = Math.min(...nums); $("to").value = Math.max(...nums);
-  $("from").max = $("to").max = Math.max(...nums);
-  panels = [];
-  for (const [label, dir] of sources) {
-    const imgs = {};
-    await Promise.all(meta.frames.filter(f => f.png).map(async f => {
-      imgs[f.frame] = await loadImage(`${dir}/${f.png}`);
-    }));
-    panels.push({ label, imgs, original: label === "Original" });
-  }
+  const nums = [...byFrame.keys()].sort((a, b) => a - b);
+  $("from").value = nums[0];
+  $("to").value = nums[Math.min(nums.length, DEFAULT_RANGE) - 1];
+  $("from").max = $("to").max = nums[nums.length - 1];
+  $("total").textContent = `(${nums.length} Bilder)`;
+  panels = sources.map(([label, dir]) => ({ label, dir, imgs: new Map(), original: label === "Original" }));
   buildPanels();
   setRange();
 }
@@ -154,7 +174,12 @@ function render() {
     drawBackground(ctx, W, H);
     const ax = 8 + box.l * sc, ay = 8 + box.t * sc;          // anchor position on canvas
     if (f) {
-      const img = p.imgs[f.frame];
+      let img = p.imgs.get(f.frame);
+      if (img === undefined) { request(f.frame, true); img = "loading"; }
+      if (img === "loading") {
+        ctx.fillStyle = "#9aa3b2"; ctx.font = "13px system-ui, sans-serif";
+        ctx.fillText("lädt …", 12, 22); img = null;
+      }
       const stale = img && !p.original &&
         (img.naturalWidth !== f.size[0] * 4 || img.naturalHeight !== f.size[1] * 4);
       if (stale) {
@@ -175,14 +200,17 @@ function render() {
     ctx.beginPath(); ctx.moveTo(ax - 6, ay + .5); ctx.lineTo(ax + 6, ay + .5);
     ctx.moveTo(ax + .5, ay - 6); ctx.lineTo(ax + .5, ay + 6); ctx.stroke();
   }
+  for (let i = 1; i <= PRELOAD_AHEAD && frames.length; i++)
+    request(frames[(pos + i) % frames.length], false);
   $("status").textContent = `Bild ${k}` + (f && f.frame !== k ? ` (= ${f.frame})` : "")
     + ` · ${pos % frames.length + 1}/${frames.length}` + (f ? ` · Palette ${f.palette}` : " · leer");
 }
 
 function setRange() {
   const a = +$("from").value, b = +$("to").value;
-  frames = meta.frames.filter(f => !f.empty && f.frame >= Math.min(a, b) && f.frame <= Math.max(a, b))
-                      .map(f => f.frame);
+  frames = [...byFrame.keys()].filter(k => k >= Math.min(a, b) && k <= Math.max(a, b))
+                               .sort((x, y) => x - y);
+  queue.length = 0;                       // drop pending loads of the old range
   pos = 0; restart(); render();
 }
 
