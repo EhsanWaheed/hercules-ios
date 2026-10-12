@@ -33,6 +33,10 @@ Effects keep their original pixels. The mod skips semi-transparent objects
 itself; frames preloaded for all objects (ENGINE1 func_8003D6C0) cannot be
 told apart at run time, so their effect frames (EFFECT_FRAMES) get no image.
 
+In VRAM the unused entries of a short palette (file words 0 after index 0)
+read 0x8000, not 0: checked against every palette row in level 1 (coins
+use S1.2 palette 8, 17 colours). The names hash the words as uploaded.
+
 P8 images are hard links to sprite_cells.py output (copies across
 filesystems); ST images are written.
 
@@ -74,6 +78,12 @@ def xxh3(data):
     return _lib.xxh3_64(data, len(data))
 
 
+def vram_words(pal_words):
+    """Palette words as they sit in VRAM: unused entries read 0x8000."""
+    w = struct.unpack("<32H", pal_words)
+    return struct.pack("<32H", w[0], *(x or 0x8000 for x in w[1:]))
+
+
 def block_name(pixels, pal_words, w, h, mode="P8"):
     top = max(pixels)
     clut = (pal_words * 8)[:2 * (top + 1)]
@@ -83,7 +93,7 @@ def block_name(pixels, pal_words, w, h, mode="P8"):
 
 def st_image(src, pixels, pal_words, w, h):
     """The HD block with alpha 143 where the original colour has bit 15."""
-    img = np.array(Image.open(src).convert("RGBA"))
+    img = np.array((src if isinstance(src, Image.Image) else Image.open(src)).convert("RGBA"))
     words = np.frombuffer(pal_words, "<u2")[np.frombuffer(bytes(pixels), np.uint8).reshape(h, w) & 0x1F]
     stp = (words & 0x8000) != 0
     sy, sx = img.shape[0] // h, img.shape[1] // w
@@ -133,6 +143,9 @@ def render(job):
             shutil.copyfile(src, dst)
     elif kind == "st":
         st_image(src, pixels, pw, w, h).save(dst, compress_level=1)
+    elif kind == "recolor_st":
+        img = recolor(src, pixels, w, h, pal_from, pal_to)
+        st_image(img, pixels, pw, w, h).save(dst, compress_level=1)
     else:
         recolor(src, pixels, w, h, pal_from, pal_to).save(dst, compress_level=1)
 
@@ -172,9 +185,12 @@ def main():
         px, w, h = bytes(cell["pixels"]), cell["w"], cell["h"]
         count = struct.unpack_from("<HH", data, 4)[1]
         default = info["palette"] % count
+        # A frame naming a palette the file lacks (coins: 200 of 19) is drawn
+        # with another one (coins: 8), so its blocks get ST twins in all.
+        st_all = info["palette"] >= count
         order = [default] + [p for p in range(count) if p != default]
         for p in order:
-            pw = palette_words(data, p)
+            pw = vram_words(palette_words(data, p))
             name = block_name(px, pw, w, h)
             if name in names:  # same pixels + palette reached elsewhere
                 continue
@@ -186,6 +202,9 @@ def main():
                 jobs.append(("st", str(src), st, px, w, h, None, None, pw))
             else:
                 jobs.append(("recolor", str(src), dst, px, w, h, rgba[default], rgba[p], pw))
+                if st_all:
+                    st = str(out_root / sprite / f"{block_name(px, pw, w, h, 'STP8')}.png")
+                    jobs.append(("recolor_st", str(src), st, px, w, h, rgba[default], rgba[p], pw))
     print(f"{len(names)} P8 names, {len(jobs)} images to write", flush=True)
     with multiprocessing.Pool(args.workers) as pool:
         for i, _ in enumerate(pool.imap_unordered(render, jobs, chunksize=64), 1):
