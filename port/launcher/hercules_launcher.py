@@ -44,6 +44,7 @@ SLOTS = 12                                             # SAVESTATE_SLOTS
 HD_PACKAGE, HD_FEATURE = "hercules.hd-sprites", "hd-sprites"
 GENERIC_PACKAGE, GENERIC_FEATURE = "psx.enhancement.hd-textures", "hd-textures"
 LEVEL_PACKAGE, LEVEL_FEATURE = "hercules.level-select", "level-select"
+WIDE_PACKAGE, WIDE_FEATURE = "hercules.widescreen", "widescreen"
 
 # (value written to settings.toml, label)
 RESOLUTIONS = [("native", "Original (320×240)"), ("720p", "720p"), ("1080p", "1080p"),
@@ -51,7 +52,8 @@ RESOLUTIONS = [("native", "Original (320×240)"), ("720p", "720p"), ("1080p", "1
 WINDOW_SIZES = [(0, "Automatisch"), (960, "960 × 720"), (1280, "1280 × 960"),
                 (1440, "1440 × 1080"), (1920, "1920 × 1440")]
 DISPLAY_MODES = [(0, "Fenster"), (1, "Vollbild (randlos)"), (2, "Vollbild (exklusiv)")]
-ASPECTS = [("4:3", "4:3 (original)"), ("16:9", "16:9 (gestreckt, breitere Sicht – experimentell)")]
+ASPECTS = [("4:3", "4:3 (original)"),
+           ("16:9", "16:9 (experimentell – Hintergründe teils noch 4:3)")]
 VSYNC = [("on", "An"), ("adaptive", "Adaptiv"), ("vrr", "VRR / FreeSync"), ("off", "Aus")]
 TEX_FILTERS = [("nearest", "Scharf (Pixel)"), ("bilinear", "Weich (bilinear)"),
                ("xbr", "Geglättet (xBR)")]
@@ -253,12 +255,12 @@ def build_variant(build, parts):
     os.replace(tmp, variant)
 
 
-def write_mod_state(build, pack, start_level="off"):
+def write_mod_state(build, pack, start_level="off", widescreen=None):
     path = build / "mods" / "state.toml"
     doc = read_toml(path) or {"format_version": 2}
     pkgs = doc.setdefault("package", [])
     feats = doc.setdefault("feature", [])
-    for pid in (HD_PACKAGE, GENERIC_PACKAGE, LEVEL_PACKAGE):
+    for pid in (HD_PACKAGE, GENERIC_PACKAGE, LEVEL_PACKAGE, WIDE_PACKAGE):
         if not any(p.get("id") == pid for p in pkgs):
             pkgs.append({"id": pid})
 
@@ -279,6 +281,8 @@ def write_mod_state(build, pack, start_level="off"):
     lv = feature(LEVEL_PACKAGE, LEVEL_FEATURE)
     lv["enabled"] = start_level != "off"
     lv["values"] = {"level": start_level}
+    if widescreen is not None:     # PSX titles widen only through a mod
+        feature(WIDE_PACKAGE, WIDE_FEATURE)["enabled"] = bool(widescreen)
     write_atomic(path, toml_dumps(doc))
 
 
@@ -290,6 +294,9 @@ def write_settings(build, cfg):
     for k in VIDEO_KEYS:
         if k == "scanlines":
             video[k] = bool(cfg[k] or cfg.get("crt_sim"))
+            continue
+        if k == "aspect_ratio":
+            video[k] = "4:3"            # 16:9 comes from hercules.widescreen
             continue
         if k == "window_width" and not cfg[k]:
             video.pop(k, None)              # 0 = let the runtime fit the display
@@ -807,7 +814,8 @@ class Launcher(Adw.Application):
             pack = None
         write_settings(self.build, self.cfg)
         write_mod_state(self.build, pack,
-                        self.cfg["start_level"] if self.selected_slot is None else "off")
+                        self.cfg["start_level"] if self.selected_slot is None else "off",
+                        widescreen=self.cfg["aspect_ratio"] == "16:9")
 
         env = game_env(self.cfg, self.selected_slot)
         log = open(self.build / "launcher_last_run.log", "w")
