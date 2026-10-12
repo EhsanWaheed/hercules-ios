@@ -71,6 +71,70 @@ Open points:
 - exact cell descriptor layout (size, VRAM placement, palette)
 - how the 5-bit output values map to pixels/palette
 
+## VRAM sprite cache and upload (ENGINE1)
+
+Decoded blocks live in an 8bpp VRAM cache of 32x32 **fields** at
+x = 768..1023 (16 columns), y = 0..223 (7 rows). A field id is
+`col << 4 | row`; VRAM rect = (0x300 + 16*col halfwords, 32*row).
+
+- `D_8006AACC` (u8[0x70]): slot -> field id. Slots 0..0x53 are the normal
+  pool (columns 1-6 and 9-14); slots 0x55..0x6F (columns 15, 8, 7, 0) are
+  only searched (backwards from 0x6F) when the flags argument has bit 0x40.
+- `D_80072D34` (12 bytes per **field id**): u16 occupancy mask of the four
+  16x16 quadrants (bit 0 TL, 1 TR, 2 BL, 3 BR), u16 tpage (`D_80072D36`),
+  then `D_80072D38` u16[4]: one chain link per quadrant (next
+  `field << 4 | mask`, 0xFFFF = end).
+- `gp+0x58`: round-robin search position, `gp+0x5C`: number of queued
+  fields, `D_80072A6C` (u16[0x20]): queue of field ids to upload,
+  `gp+0x290C`: staging buffer, 1024 bytes (one 32x32 8bpp field) per
+  queue entry.
+
+`func_8003F9D4(cells, n, flags)` per cell with own pixels:
+1. size class from the size byte: bit 1 -> width > 16, bit 3 -> height > 16;
+   class 0/1/2/3 = 16x16 / 32x16 / 16x32 / 32x32, quadrant mask
+   `D_8006AAB8` = {1, 3, 5, 15}.
+2. first try a free quadrant (or pair) in a field already queued this
+   batch; otherwise take the next free field from the pool (LRU-ish
+   round robin). With 0x20 fields queued it calls `DrawSync(0)`,
+   `func_8004023C()`, `DrawSync(0)` first.
+3. decode (or, with flags bit 0x20, copy raw) the block into the staging
+   field at quadrant offset (+16 px for TR/BR, +16 rows for BL/BR). Only
+   the block's own w x h pixels are written; the rest of the field keeps
+   whatever was there (stale data).
+4. chain `field << 4 | mask` into the per-quadrant links; the first one is
+   the return value. If the pool is full, the frame's links are undone and
+   it returns 0xFFFF (frame not drawn this time).
+
+`func_8004023C()` flushes the queue: vertically adjacent fields in one
+column are merged, then one `LoadImage({x, y, 16, 32*k}, staging)` per run.
+So VRAM always receives whole 32-pixel-wide columns including stale
+quadrants -- which is why DuckStation's per-upload hash rarely repeats.
+Callers of the flush: `func_8003F9D4` (queue full), `func_80038414`,
+`func_80038B58`, `func_8003D6C0` (once per frame, presumably).
+
+Drawing (`func_8003EA78`): one `POLY_FT4` (tag length 9) per cell.
+Texture page from `D_80072D36` of the field, OR'd with the
+semi-transparency mode `(obj+0x54 & 3) << 5`.
+CLUT = `((obj+0x1E) + 0xE0) << 6 | 0x30`, i.e. palettes are rows at VRAM
+(768, 224 + palette index), 8bpp. A row holds the 32 colours eight times
+(confirmed against DuckStation dump hashes): decoded bytes keep their upper
+bits (about 20% of pixels are >= 32), and the repeat makes them wrap.
+UV: U = (col & 7) * 32 + 16 * quadrant-x, V = row * 32 + 16 * quadrant-y;
+a bit-7 cell adds (size & 0xF) * 8 to U and ((size >> 4) & 7) * 8 to V.
+Width/height come from the cell's drawn size; mirrored objects
+(obj+0x54 bit 4) swap the X coordinates instead of the UVs. Primitives go
+into the ordering table `D_80074978` at depth 0x4BF - obj+0x10.
+
+**HD replacement in the port** (HerculesRecomp mod `hercules.hd-sprites`):
+an instruction hook at `0x8003FD7C` (just before a cell is decoded:
+`$t1` queue index, `$s1` quadrant, `$fp` cell) records each block; a
+function hook on `func_8004023C` runs the flush, `DrawSync(0)`, then
+uploads every recorded block again as its own w x h rectangle (packed at
+the start of the now-unused staging buffer). VRAM gets the same bytes, but
+PSXRecomp's DuckStation-format pack tracks one upload per block, so
+`tools/sprite_texpack.py` can name the HD blocks
+`texupload-P8-<xxh3 pixels>-<xxh3 CLUT prefix>-...`.
+
 ## Decoder status (tools/sprites.py)
 
 `sprites.py check` decodes 10696 of 10697 non-empty frames exactly (the cell

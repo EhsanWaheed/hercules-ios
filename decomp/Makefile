@@ -97,3 +97,8 @@ $(addprefix check-,$(SUBTARGETS)): check-%: $(BUILD)/%.bin
 clean:
 	rm -rf $(BUILD)/asm $(BUILD)/src $(ELF) $(EXE) $(BUILD)/$(TARGET).map \
 	  $(foreach t,$(SUBTARGETS),$(BUILD)/$(t).elf $(BUILD)/$(t).bin $(BUILD)/$(t).map)
+
+# XXH3 for tools/sprite_texpack.py (header vendored by PSXRecomp).
+XXHASH_DIR ?= $(HOME)/psx-decomp/HerculesRecomp/psxrecomp/runtime/third_party
+tools/native/libxxh3.so: tools/native/xxh3.c
+	gcc -O2 -shared -fPIC -I$(XXHASH_DIR) -o $@ $<
