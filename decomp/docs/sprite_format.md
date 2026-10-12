@@ -155,6 +155,13 @@ post-hit flash are drawn semi-transparent). `sprite_texpack.py` therefore
 writes each block twice, as `P8` and as `STP8` with alpha 143 on bit-15
 texels; the runtime picks the image matching the primitive.
 
+Palettes are chosen per object at run time (`obj+0x1E`), not by the frame
+table: in level 1 Hercules (`SD1/S1_1`, `S1_4`) is drawn with palette 3 of
+his file although his frames name palette 0. The pack therefore holds every
+block in every palette of its file (recoloured index by index, 204,704
+distinct names); only the frame's own palette gets the `STP8` twin, which
+keeps the pack (239,467 images) under the loader's 262,144-file limit.
+
 ## Decoder status (tools/sprites.py)
 
 `sprites.py check` decodes 10696 of 10697 non-empty frames exactly (the cell
