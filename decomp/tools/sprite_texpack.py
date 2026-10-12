@@ -29,6 +29,10 @@ prefers the ST image. There, alpha 143 marks a blended texel (the
 DuckStation dump convention), 255 an opaque one; without the twin a shadow
 would be drawn solid.
 
+Effects keep their original pixels. The mod skips semi-transparent objects
+itself; frames preloaded for all objects (ENGINE1 func_8003D6C0) cannot be
+told apart at run time, so their effect frames (EFFECT_FRAMES) get no image.
+
 P8 images are hard links to sprite_cells.py output (copies across
 filesystems); ST images are written.
 
@@ -56,6 +60,10 @@ import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
 ST_ALPHA = 143
+
+# Preloaded effect frames that stay native: (sprite dir, 1-based frame).
+# S1.2 preloads frames 1-28 (HUD), 108-129 (coins) and 262-263 (sparkles).
+EFFECT_FRAMES = {("SD1/S1_2", 262), ("SD1/S1_2", 263)}
 
 _lib = ctypes.CDLL(str(Path(__file__).resolve().parent / "native/libxxh3.so"))
 _lib.xxh3_64.restype = ctypes.c_ulonglong
@@ -149,6 +157,8 @@ def main():
             skipped += 1
             continue
         sprite = info["sprite"]
+        if any(tuple(f) in EFFECT_FRAMES for f in info["frames"]):
+            continue
         if sprite not in files:
             meta = json.loads((ROOT / "assets/sprites" / sprite / "meta.json").read_text())
             data = (ROOT / meta["file"]).read_bytes()
