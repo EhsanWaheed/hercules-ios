@@ -1,7 +1,8 @@
-__main = 0x80038350; // type:func
-stup2 = 0x80038358; // type:func
-stup1 = 0x8003837C; // type:func
-stup0 = 0x800383F8; // type:func
+// PsyQ start-up names also exist in SCES_008.93; prefixed so the linker cannot pick the boot copies.
+engine1___main = 0x80038350; // type:func
+engine1_stup2 = 0x80038358; // type:func
+engine1_stup1 = 0x8003837C; // type:func
+engine1_stup0 = 0x800383F8; // type:func
 SsInit = 0x80054CC0; // type:func
 ScaleMatrix = 0x80068ABC; // type:func
 SetGeomOffset = 0x80068BEC; // type:func

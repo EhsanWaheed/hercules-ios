@@ -29,6 +29,8 @@ options:
   undefined_syms_auto_path: config/undefined_syms_auto.engine1.txt
 
   subalign: 2
+  ld_align_section_vram_end: False
+  ld_align_segment_vram_end: False
   string_encoding: ASCII
   data_string_encoding: ASCII
   rodata_string_guesser_level: 2
@@ -43,4 +45,5 @@ segments:
     vram: 0x80038350
     subsegments:
       - [0x800, asm]
+      - [0x32138, data]
   - [0x3D000]

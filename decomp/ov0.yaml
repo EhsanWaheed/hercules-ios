@@ -1,0 +1,47 @@
+name: OV0
+# Level code overlay, loaded above ENGINE1 (base from the jal targets that land on
+# function prologues; level table pointers in ENGINE1 agree).
+options:
+  basename: ov0
+  target_path: files/OV/OV0.
+  elf_path: build/ov0.elf
+  base_path: .
+  platform: psx
+  compiler: PSYQ
+
+  asm_path: asm/ov0
+  src_path: src/ov0
+  build_path: build
+  asset_path: assets/ov0
+
+  ld_script_path: build/ov0.ld
+  find_file_boundaries: True
+
+  o_as_suffix: True
+  use_legacy_include_asm: False
+  section_order: [".rodata", ".text", ".data", ".bss"]
+
+  symbol_addrs_path:
+    - config/symbol_addrs.main.txt
+    - config/symbol_addrs.engine1.txt
+    - config/symbol_addrs.ov0.txt
+  reloc_addrs_path:
+    - config/reloc_addrs.ov0.txt
+  undefined_funcs_auto_path: config/undefined_funcs_auto.ov0.txt
+  undefined_syms_auto_path: config/undefined_syms_auto.ov0.txt
+
+  subalign: 2
+  ld_align_section_vram_end: False
+  ld_align_segment_vram_end: False
+  string_encoding: ASCII
+  data_string_encoding: ASCII
+  rodata_string_guesser_level: 2
+  data_string_guesser_level: 2
+segments:
+  - name: ov0
+    type: code
+    start: 0x0
+    vram: 0x80074A4C
+    subsegments:
+      - [0x0, data]
+  - [0xa3c]

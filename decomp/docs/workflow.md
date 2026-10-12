@@ -63,6 +63,29 @@ Funktionsgrenzen, Symbolen und Ladeadresse.
 5. **Ergebnis prüfen:** jede Datei baut wieder byte-identisch (`make check`
    pro Datei).
 
+**Stand 12.10.:** Schritte 1, 2 und 5 erledigt. `make check-all` baut alle
+16 Dateien byte-identisch (Startdatei, ENGINE1/3, TITLE, OV0–OV11).
+
+| Datei | Ladeadresse | Code | Daten ab | Funktionen |
+|-------|-------------|------|----------|-----------:|
+| ENGINE1 | 0x80038350 | 0x800 | 0x32138 | 627 |
+| ENGINE3 | 0x80038350 | 0x800 | 0x29B28 | 536 |
+| TITLE | 0x80038350 | 0x800 | 0x2D13C | 456 |
+| OV0 (Level 0) | 0x80074A4C | – | 0x0 | 0 |
+| OV1, 3, 5, 6, 7, 9, 11 | 0x80074A4C (über ENGINE1) | nach Sprungtabellen | nach letztem `jr ra` | 20–152 |
+| OV2, 8, 10 | 0x800684A0 (über ENGINE3) | 0xC0 / 0x1B0 / 0x120 | nach letztem `jr ra` | 71–102 |
+| OV4 | 0x80074A4C | Stummel (`jr ra`) | – | 1 |
+
+Ladeadressen der Overlays: die Basis, bei der die meisten `jal`-Ziele im
+Overlay auf `addiu sp,sp,-x` treffen; stimmt mit den Zeigern der
+ENGINE1-Level-Tabelle überein. OV10 ruft nichts in sich selbst auf, Basis
+von OV2/OV8 übernommen. Welche Engine: die `jal`-Ziele unter dem Overlay
+treffen Funktionsanfänge nur in einer der beiden Engines.
+Fallen: Overlay-Basis nicht 16-ausgerichtet (`ld_align_*: False`), OV1-Größe
+nicht durch 4 teilbar (`bin`-Rest), PsyQ-Startnamen (`__main`, `stup0–2`)
+gibt es in Startdatei und ENGINE1 (in ENGINE1 mit Präfix `engine1_`).
+Die Funktionszahlen der Engines enthalten deren eigene PsyQ-Kopien.
+
 Ausgabe: vollständige Funktionsliste mit Adressen, Größen, Namen (soweit
 bekannt) – die Eingabe für Phase 2.
 

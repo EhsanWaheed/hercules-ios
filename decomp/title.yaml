@@ -1,0 +1,49 @@
+name: TITLE
+options:
+  basename: title
+  target_path: files/EX/TITLE.
+  elf_path: build/title.elf
+  base_path: .
+  platform: psx
+  compiler: PSYQ
+
+  asm_path: asm/title
+  src_path: src/title
+  build_path: build
+  asset_path: assets/title
+
+  ld_script_path: build/title.ld
+  find_file_boundaries: True
+
+  o_as_suffix: True
+  use_legacy_include_asm: False
+  section_order: [".rodata", ".text", ".data", ".bss"]
+
+  # Boot executable symbols: the engine calls PsyQ code resident in SCES_008.93.
+  symbol_addrs_path:
+    - config/symbol_addrs.main.txt
+    - config/symbol_addrs.title.txt
+  reloc_addrs_path:
+    - config/reloc_addrs.title.txt
+  undefined_funcs_auto_path: config/undefined_funcs_auto.title.txt
+  undefined_syms_auto_path: config/undefined_syms_auto.title.txt
+
+  subalign: 2
+  ld_align_section_vram_end: False
+  ld_align_segment_vram_end: False
+  string_encoding: ASCII
+  data_string_encoding: ASCII
+  rodata_string_guesser_level: 2
+  data_string_guesser_level: 2
+segments:
+  - name: header
+    type: header
+    start: 0x0
+  - name: title
+    type: code
+    start: 0x800
+    vram: 0x80038350
+    subsegments:
+      - [0x800, asm]
+      - [0x2d13c, data]
+  - [0x47000]

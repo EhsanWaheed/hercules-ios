@@ -1,0 +1,49 @@
+name: OV8
+# Level code overlay, loaded above ENGINE3 (base from the jal targets that land on
+# function prologues; same base as the other ENGINE3 overlays).
+options:
+  basename: ov8
+  target_path: files/OV/OV8.
+  elf_path: build/ov8.elf
+  base_path: .
+  platform: psx
+  compiler: PSYQ
+
+  asm_path: asm/ov8
+  src_path: src/ov8
+  build_path: build
+  asset_path: assets/ov8
+
+  ld_script_path: build/ov8.ld
+  find_file_boundaries: True
+
+  o_as_suffix: True
+  use_legacy_include_asm: False
+  section_order: [".rodata", ".text", ".data", ".bss"]
+
+  symbol_addrs_path:
+    - config/symbol_addrs.main.txt
+    - config/symbol_addrs.engine3.txt
+    - config/symbol_addrs.ov8.txt
+  reloc_addrs_path:
+    - config/reloc_addrs.ov8.txt
+  undefined_funcs_auto_path: config/undefined_funcs_auto.ov8.txt
+  undefined_syms_auto_path: config/undefined_syms_auto.ov8.txt
+
+  subalign: 2
+  ld_align_section_vram_end: False
+  ld_align_segment_vram_end: False
+  string_encoding: ASCII
+  data_string_encoding: ASCII
+  rodata_string_guesser_level: 2
+  data_string_guesser_level: 2
+segments:
+  - name: ov8
+    type: code
+    start: 0x0
+    vram: 0x800684A0
+    subsegments:
+      - [0x0, rodata]
+      - [0x1b0, asm]
+      - [0x701c, data]
+  - [0x8f30]

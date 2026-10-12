@@ -1,0 +1,49 @@
+name: OV3
+# Level code overlay, loaded above ENGINE1 (base from the jal targets that land on
+# function prologues; level table pointers in ENGINE1 agree).
+options:
+  basename: ov3
+  target_path: files/OV/OV3.
+  elf_path: build/ov3.elf
+  base_path: .
+  platform: psx
+  compiler: PSYQ
+
+  asm_path: asm/ov3
+  src_path: src/ov3
+  build_path: build
+  asset_path: assets/ov3
+
+  ld_script_path: build/ov3.ld
+  find_file_boundaries: True
+
+  o_as_suffix: True
+  use_legacy_include_asm: False
+  section_order: [".rodata", ".text", ".data", ".bss"]
+
+  symbol_addrs_path:
+    - config/symbol_addrs.main.txt
+    - config/symbol_addrs.engine1.txt
+    - config/symbol_addrs.ov3.txt
+  reloc_addrs_path:
+    - config/reloc_addrs.ov3.txt
+  undefined_funcs_auto_path: config/undefined_funcs_auto.ov3.txt
+  undefined_syms_auto_path: config/undefined_syms_auto.ov3.txt
+
+  subalign: 2
+  ld_align_section_vram_end: False
+  ld_align_segment_vram_end: False
+  string_encoding: ASCII
+  data_string_encoding: ASCII
+  rodata_string_guesser_level: 2
+  data_string_guesser_level: 2
+segments:
+  - name: ov3
+    type: code
+    start: 0x0
+    vram: 0x80074A4C
+    subsegments:
+      - [0x0, rodata]
+      - [0x554, asm]
+      - [0x86ac, data]
+  - [0xbfbc]
