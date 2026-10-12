@@ -302,6 +302,21 @@ def write_settings(build, cfg):
     write_atomic(path, toml_dumps(doc))
 
 
+def game_env(cfg, slot):
+    """Environment for the game: save-state slot and the CRT simulation.
+    Scanline variables from the caller's shell are dropped so settings.toml
+    (written by write_settings) decides."""
+    env = dict(os.environ)
+    for k in ("PSX_LOAD_SLOT", "PSX_SCANLINES", "PSX_SCANLINE_STRENGTH"):
+        env.pop(k, None)
+    if slot is not None:
+        env["PSX_LOAD_SLOT"] = str(slot)
+    env["PSX_CRT"] = "1" if cfg["crt_sim"] else "0"
+    env["PSX_CRT_MASK"] = str(cfg["crt_mask"])
+    env["PSX_CRT_BLOOM"] = str(cfg["crt_bloom"])
+    return env
+
+
 # ----------------------------------------------------------------------- UI
 def combo(title, subtitle, items, value, on_change):
     row = Adw.ComboRow(title=title, subtitle=subtitle or "")
@@ -393,7 +408,11 @@ class Launcher(Adw.Application):
         self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
 
     def set(self, key, value):
+        if self.updating and key == "scanlines":
+            return                      # display-only update from sync_scan_row
         self.cfg[key] = value
+        if key == "crt_sim":
+            self.sync_scan_row()
         if not self.updating:
             if key in {"internal_resolution", "texture_filtering", "antialiasing", "crt_filter",
                        "scanlines", "scanline_strength", "crt_sim", "hd_sprites", "hd_levels", "hd_hud",
@@ -604,6 +623,7 @@ class Launcher(Adw.Application):
         for key, widget in self.widgets.items():
             self.apply_widget(key, widget)
         self.updating = False
+        self.sync_scan_row()
         self.sync_preset_row()
         self.save_store()
         self.refresh_summary()
@@ -694,7 +714,21 @@ class Launcher(Adw.Application):
         crt.add(self.slider("crt_mask", "Lochmaske", "Sichtbarkeit des RGB-Musters", 0, 100))
         crt.add(self.slider("crt_bloom", "Leuchten", "Glühen um helle Stellen", 0, 100))
         page.add(crt)
+        self.sync_scan_row()
         return page
+
+    def sync_scan_row(self):
+        """The CRT simulation needs scanlines on: show that instead of hiding it."""
+        row = getattr(self, "widgets", {}).get("scanlines")
+        if row is None:
+            return
+        crt = bool(self.cfg["crt_sim"])
+        was = self.updating
+        self.updating = True
+        row.set_active(crt or bool(self.cfg["scanlines"]))
+        self.updating = was
+        row.set_sensitive(not crt)
+        row.set_subtitle("An durch die CRT-Simulation" if crt else "Dunkle Zeilen wie auf einer Röhre")
 
     def page_system(self):
         page = Adw.PreferencesPage()
@@ -775,13 +809,7 @@ class Launcher(Adw.Application):
         write_mod_state(self.build, pack,
                         self.cfg["start_level"] if self.selected_slot is None else "off")
 
-        env = dict(os.environ)
-        env.pop("PSX_LOAD_SLOT", None)
-        if self.selected_slot is not None:
-            env["PSX_LOAD_SLOT"] = str(self.selected_slot)
-        env["PSX_CRT"] = "1" if self.cfg["crt_sim"] else "0"
-        env["PSX_CRT_MASK"] = str(self.cfg["crt_mask"])
-        env["PSX_CRT_BLOOM"] = str(self.cfg["crt_bloom"])
+        env = game_env(self.cfg, self.selected_slot)
         log = open(self.build / "launcher_last_run.log", "w")
         try:
             self.game = subprocess.Popen([str(self.exe), "--no-launcher"], cwd=self.build,
