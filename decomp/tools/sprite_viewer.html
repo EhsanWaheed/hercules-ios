@@ -86,8 +86,9 @@ function frameFile(k) {
 
 async function loadFolder(name) {
   const entry = index.folders[name];
-  meta = await getJSON(entry.meta);
-  const sources = [["Original", "assets/sprites/" + name]].concat(Object.entries(entry.variants));
+  meta = await getJSON("/" + entry.meta);
+  const sources = [["Original", "/assets/sprites/" + name]]
+    .concat(Object.entries(entry.variants).map(([l, d]) => [l, "/" + d]));
   const nums = meta.frames.filter(f => !f.empty).map(f => f.frame);
   $("from").value = Math.min(...nums); $("to").value = Math.max(...nums);
   $("from").max = $("to").max = Math.max(...nums);
@@ -189,7 +190,7 @@ function restart() {
 function step(d) { playing = false; restart(); pos = (pos + d + frames.length) % frames.length; render(); }
 
 async function init() {
-  index = await getJSON("../build/sprite_index.json");
+  index = await getJSON("/build/sprite_index.json");
   const names = Object.keys(index.folders);
   names.sort((a, b) => (Object.keys(index.folders[b].variants).length > 0)
                      - (Object.keys(index.folders[a].variants).length > 0) || a.localeCompare(b, "de", { numeric: true }));
