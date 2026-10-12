@@ -6,7 +6,8 @@ Runs in chaiNNer's bundled Python (it has torch + spandrel):
     ~/.config/chaiNNer/python/python/bin/python3.11 tools/upscale_model.py \
         ~/psx-decomp/models/IllustrationJaNai/4x_IllustrationJaNai_V1_DAT2_190k.pth IN_DIR OUT_DIR
 
-Colour and alpha are upscaled separately: transparent pixels first take the
+IN_DIR may be a tree; its folders are mirrored below OUT_DIR. Colour and
+alpha are upscaled separately: transparent pixels first take the
 colour of their nearest opaque neighbour (so edges do not pick up a dark
 halo), the alpha channel goes through the model as a grey image. Existing
 outputs newer than their input are skipped.
@@ -52,8 +53,10 @@ def main():
     model.eval()
     dst.mkdir(parents=True, exist_ok=True)
     done = 0
-    for f in sorted(src.glob("*.png")):
-        out = dst / f.name
+    # A tree (assets/sprites/SD1/S1_3/f0001.png ...) is mirrored below DST.
+    for f in sorted(src.rglob("*.png")):
+        out = dst / f.relative_to(src)
+        out.parent.mkdir(parents=True, exist_ok=True)
         if out.exists() and out.stat().st_mtime >= f.stat().st_mtime:
             continue
         im = np.asarray(Image.open(f).convert("RGBA"))
