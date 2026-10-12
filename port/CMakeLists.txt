@@ -38,6 +38,9 @@ endif()
 
 psxrecomp_add_game_runtime(psx-runtime
     PRELOADED_MODS_DIR "${PSX_PRELOADED_MODS}"
+    # ENGINE1/ENGINE3/TITLE and level overlays, compiled from the original disc
+    # (aot/overlays.json, written by hercules/tools/aot_profile.py).
+    GAME_OVERLAY_STATIC_C "${CMAKE_CURRENT_SOURCE_DIR}/generated/overlays_static.c"
     # ENABLE_NETPLAY_IF_PRESENT
     # NETPLAY_LOBBY_URL "ws://netplay.retcomm.net:8765"
     # ENABLE_SETUP_WIZARD

@@ -33,6 +33,10 @@ known_crc32 = [
 seeds = "seeds/ghidra_funcs.txt"
 out_dir = "generated"
 strict = true
+# hercules.hd-sprites (mods/src/hercules_hd_sprites.c): sprite cache hooks in
+# ENGINE1 / ENGINE3 / TITLE, so the AOT overlay code calls them too.
+mod_function_entry_funcs = ["0x8004023C", "0x8003F64C", "0x8005464C"]
+mod_instruction_sites = ["0x8003FD7C", "0x8003F18C", "0x8005418C"]
 
 [runtime]
 window_title = "Hercules Recompiled"
