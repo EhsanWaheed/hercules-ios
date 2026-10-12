@@ -73,4 +73,5 @@ endforeach()
 # Game-owned trusted plugins (activated by mods/preloaded manifests).
 target_sources(psx-runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_hd_sprites.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_level_select.c")
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_level_select.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_widescreen.c")

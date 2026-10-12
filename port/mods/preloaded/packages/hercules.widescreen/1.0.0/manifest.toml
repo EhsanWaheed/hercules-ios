@@ -1,0 +1,22 @@
+format_version = 5
+id = "hercules.widescreen"
+version = "1.0.0"
+name = "Widescreen (experimental)"
+author = "hercules decomp"
+description = "Requests a 16:9 display with PSXRecomp's native-wide renderer. Experimental: the game's own culls still assume a 320-pixel screen, so the side margins may stay empty or objects may appear late."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SCES-00893"
+
+[[feature]]
+id = "widescreen"
+name = "Widescreen 16:9"
+description = "Native-wide 16:9 presentation."
+group = "Visual"
+default_enabled = false
+
+[[plugin]]
+feature = "widescreen"
+id = "hercules.widescreen"
