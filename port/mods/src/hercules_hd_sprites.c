@@ -46,9 +46,20 @@ static const Module k_modules[] = {
 
 #define REG_T1 9
 #define REG_S1 17
+#define REG_SP 29
 #define REG_GP 28
 #define REG_FP 30
 #define REG_RA 31
+
+/* The decode function (ENGINE1 func_8003F9D4) is called from the per-object
+ * draw (func_8003E5D8, $s0 = object) and from a per-file preload. Its frame
+ * saves the caller's $s0 at sp+0x40 and $ra at sp+0x64; the instruction
+ * after the object path's jal is `addu $v1, $v0, $zero`. */
+#define DECODE_FRAME_S0   0x40u
+#define DECODE_FRAME_RA   0x64u
+#define OBJECT_CALL_AFTER 0x00401821u
+#define OBJ_FLAGS         0x54u
+#define OBJ_FLAG_SEMI     0x4u /* func_80045098: sets the primitive's ABE bit */
 
 #define MAX_BLOCKS 256 /* 0x20 queued fields x 4 quadrants, with room */
 
@@ -83,6 +94,18 @@ static void on_decode(struct CPUState* cpu, uint32_t address) {
     s_owner = m;
     if (s_count >= MAX_BLOCKS) {
         psx_mod_counter_add("hercules.hd-sprites.overflow", 1);
+        return;
+    }
+    /* Effects (semi-transparent objects: sparks, flashes, shadows) keep the
+     * original pixels: without a per-block upload no replacement matches.
+     * The block cache is per object, so the choice sticks with the object.
+     * Preloaded frames (shared by all objects: HUD symbols, coins and the
+     * sparkles of SD1/S1.2) are always uploaded; tools/sprite_texpack.py
+     * leaves the effect frames among them out of the pack. */
+    const uint32_t sp = cpu->gpr[REG_SP];
+    if (psx_mod_read_word(psx_mod_read_word(sp + DECODE_FRAME_RA)) == OBJECT_CALL_AFTER &&
+        (psx_mod_read_word(psx_mod_read_word(sp + DECODE_FRAME_S0) + OBJ_FLAGS) & OBJ_FLAG_SEMI)) {
+        psx_mod_counter_add("hercules.hd-sprites.effect_native", 1);
         return;
     }
     const uint32_t queue_index = cpu->gpr[REG_T1];
