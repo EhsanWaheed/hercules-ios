@@ -1,0 +1,82 @@
+format_version = 5
+id = "hercules.level-select"
+version = "1.0.0"
+name = "Level Select"
+author = "hercules decomp"
+description = "Starts a new game (title screen, Spiel starten) in the chosen level instead of level 1. The attract demo and continues are left alone."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SCES-00893"
+
+[[feature]]
+id = "level-select"
+name = "Level Select"
+description = "Overrides the level a new game starts in (D_80035048) while the title screen hands over."
+group = "Gameplay"
+default_enabled = false
+
+[[option]]
+feature = "level-select"
+id = "level"
+label = "Start level"
+description = "Level a new game starts in."
+type = "choice"
+default = "off"
+
+[[option.choice]]
+value = "off"
+label = "Off"
+
+[[option.choice]]
+value = "0"
+label = "Level 0"
+
+[[option.choice]]
+value = "1"
+label = "Level 1 (Start)"
+
+[[option.choice]]
+value = "2"
+label = "Level 2"
+
+[[option.choice]]
+value = "3"
+label = "Level 3"
+
+[[option.choice]]
+value = "4"
+label = "Level 4"
+
+[[option.choice]]
+value = "5"
+label = "Level 5"
+
+[[option.choice]]
+value = "6"
+label = "Level 6"
+
+[[option.choice]]
+value = "7"
+label = "Level 7"
+
+[[option.choice]]
+value = "8"
+label = "Level 8"
+
+[[option.choice]]
+value = "9"
+label = "Level 9"
+
+[[option.choice]]
+value = "10"
+label = "Level 10"
+
+[[option.choice]]
+value = "11"
+label = "Level 11"
+
+[[plugin]]
+feature = "level-select"
+id = "hercules.level-select"

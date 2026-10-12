@@ -12,10 +12,10 @@ This tool edits those files, then starts the game with --no-launcher and
 waits for it. Its own choices (preset, slot names) live in
 <exe-dir>/launcher.json.
 
-HD sprites and HD level textures share one pack (replacements/sprites and
-replacements/levels). The pack loader does not follow directory symlinks,
-so "only one of them" uses a variant pack made of hard links
-(SCES-00893.launcher-sprites / -levels), rebuilt when the main pack changes.
+HD sprites, level textures and HUD share one pack (replacements/sprites,
+replacements/levels, replacements/hud). The pack loader does not follow directory symlinks,
+so a subset uses a variant pack made of hard links
+(SCES-00893.launcher-sprites+hud etc.), rebuilt when the main pack changes.
 
     python3 launcher/hercules_launcher.py [--build build-release]
 """
@@ -43,6 +43,7 @@ EXE_NAME = "Hercules_Recompiled"
 SLOTS = 12                                             # SAVESTATE_SLOTS
 HD_PACKAGE, HD_FEATURE = "hercules.hd-sprites", "hd-sprites"
 GENERIC_PACKAGE, GENERIC_FEATURE = "psx.enhancement.hd-textures", "hd-textures"
+LEVEL_PACKAGE, LEVEL_FEATURE = "hercules.level-select", "level-select"
 
 # (value written to settings.toml, label)
 RESOLUTIONS = [("native", "Original (320×240)"), ("720p", "720p"), ("1080p", "1080p"),
@@ -56,6 +57,13 @@ TEX_FILTERS = [("nearest", "Scharf (Pixel)"), ("bilinear", "Weich (bilinear)"),
                ("xbr", "Geglättet (xBR)")]
 SCREENS = [("raw", "Roh (exakte Farben)"), ("crt", "Röhrenfernseher"),
            ("composite", "Composite-Kabel"), ("trinitron", "Trinitron")]
+# Start level for a new game (mod hercules.level-select); "off" = level 1 as usual.
+# Descriptions from screenshots of each forced start (official names not checked).
+LEVELS = [("off", "Normal (Level 1)"), ("0", "Level 0 – Tempel"), ("2", "Level 2 – Lauf-Parcours"),
+          ("3", "Level 3 – Wald"), ("4", "Level 4"), ("5", "Level 5 – Theben"),
+          ("6", "Level 6 – Hydra"), ("7", "Level 7 – Arena"), ("8", "Level 8 – Lauf durch die Stadt"),
+          ("9", "Level 9 – Pegasus-Flug"), ("10", "Level 10 – Lauf durch die Unterwelt"),
+          ("11", "Level 11 – Unterwelt")]
 AUDIO_FREQS = [(48000, "48 000 Hz"), (44100, "44 100 Hz"), (32000, "32 000 Hz")]
 
 DEFAULTS = {
@@ -65,15 +73,16 @@ DEFAULTS = {
     "scanline_strength": 0.35, "perspective_texturing": False,
     "geometry_correction": False, "auto_skip_fmv": False, "rewind": True,
     "frequency": 48000, "spu_hq": True, "hd_sprites": True, "hd_levels": True,
+    "hd_hud": True, "start_level": "off",
 }
 PRESETS = {
     "original": dict(internal_resolution="native", texture_filtering="nearest",
                      antialiasing=False, crt_filter="crt", scanlines=True,
-                     scanline_strength=0.35, hd_sprites=False, hd_levels=False,
+                     scanline_strength=0.35, hd_sprites=False, hd_levels=False, hd_hud=False,
                      perspective_texturing=False),
     "hd": dict(internal_resolution="1080p", texture_filtering="nearest",
                antialiasing=False, crt_filter="raw", scanlines=False,
-               hd_sprites=True, hd_levels=True),
+               hd_sprites=True, hd_levels=True, hd_hud=True),
 }
 VIDEO_KEYS = ["internal_resolution", "window_width", "fullscreen", "aspect_ratio", "vsync",
               "texture_filtering", "antialiasing", "crt_filter", "scanlines",
@@ -184,54 +193,71 @@ def is_state_file(path):
 
 
 # ------------------------------------------------------------------ HD pack
-def pack_for(build, sprites, levels):
-    """Pack root for the chosen HD parts, or None for none."""
+PACK_PARTS = (("sprites", "hd_sprites"), ("levels", "hd_levels"), ("hud", "hd_hud"))
+
+
+def chosen_parts(cfg):
+    return [part for part, key in PACK_PARTS if cfg.get(key)]
+
+
+def pack_for(build, parts):
+    """Pack root for the chosen HD parts (replacements/<part>), or None for none."""
     base = build / "mods" / "texture-packs" / GAME_ID
-    if not (sprites or levels):
+    if not parts:
         return None
-    if sprites and levels:
+    if set(parts) >= {p for p, _ in PACK_PARTS if (base / "replacements" / p).is_dir()}:
         return base
-    part = "sprites" if sprites else "levels"
-    return base.with_name(f"{GAME_ID}.launcher-{part}")
+    return base.with_name(f"{GAME_ID}.launcher-{'+'.join(parts)}")
 
 
-def variant_stale(build, part):
+def _sources(build, parts):
     base = build / "mods" / "texture-packs" / GAME_ID
-    variant = base.with_name(f"{GAME_ID}.launcher-{part}")
-    src = base / "replacements" / part
+    out = {}
+    for part in parts:
+        try:
+            st = (base / "replacements" / part).stat()
+            out[part] = [st.st_ino, st.st_mtime]
+        except OSError:
+            pass
+    return out
+
+
+def variant_stale(build, parts):
+    variant = pack_for(build, parts)
+    if variant is None or variant.name == GAME_ID:
+        return False
     try:
-        st = src.stat()
         marker = json.loads((variant / "launcher-source.json").read_text())
     except (OSError, ValueError):
         return True
-    return marker != {"ino": st.st_ino, "mtime": st.st_mtime}
+    return marker != _sources(build, parts)
 
 
-def build_variant(build, part):
-    """Hard-link replacements/<part> of the main pack into its own pack."""
+def build_variant(build, parts):
+    """Hard-link replacements/<part> of the main pack into a pack of its own."""
     base = build / "mods" / "texture-packs" / GAME_ID
-    variant = base.with_name(f"{GAME_ID}.launcher-{part}")
-    src = base / "replacements" / part
+    variant = pack_for(build, parts)
     tmp = variant.with_name(variant.name + ".tmp")
     shutil.rmtree(tmp, ignore_errors=True)
     (tmp / "replacements").mkdir(parents=True)
     (tmp / "dumps").mkdir()
-    for name in ("config.yaml",):
-        if (base / name).exists():
-            shutil.copy2(base / name, tmp / name)
-    subprocess.run(["cp", "-al", str(src), str(tmp / "replacements" / part)], check=True)
-    st = src.stat()
-    (tmp / "launcher-source.json").write_text(json.dumps({"ino": st.st_ino, "mtime": st.st_mtime}))
+    if (base / "config.yaml").exists():
+        shutil.copy2(base / "config.yaml", tmp / "config.yaml")
+    for part in parts:
+        src = base / "replacements" / part
+        if src.is_dir():
+            subprocess.run(["cp", "-al", str(src), str(tmp / "replacements" / part)], check=True)
+    (tmp / "launcher-source.json").write_text(json.dumps(_sources(build, parts)))
     shutil.rmtree(variant, ignore_errors=True)
     os.replace(tmp, variant)
 
 
-def write_mod_state(build, pack):
+def write_mod_state(build, pack, start_level="off"):
     path = build / "mods" / "state.toml"
     doc = read_toml(path) or {"format_version": 2}
     pkgs = doc.setdefault("package", [])
     feats = doc.setdefault("feature", [])
-    for pid in (HD_PACKAGE, GENERIC_PACKAGE):
+    for pid in (HD_PACKAGE, GENERIC_PACKAGE, LEVEL_PACKAGE):
         if not any(p.get("id") == pid for p in pkgs):
             pkgs.append({"id": pid})
 
@@ -249,6 +275,9 @@ def write_mod_state(build, pack):
         hd.setdefault("resources", {})["pack"] = str(pack)
     # The generic loader would load the same pack a second time.
     feature(GENERIC_PACKAGE, GENERIC_FEATURE)["enabled"] = False
+    lv = feature(LEVEL_PACKAGE, LEVEL_FEATURE)
+    lv["enabled"] = start_level != "off"
+    lv["values"] = {"level": start_level}
     write_atomic(path, toml_dumps(doc))
 
 
@@ -363,7 +392,7 @@ class Launcher(Adw.Application):
         self.cfg[key] = value
         if not self.updating:
             if key in {"internal_resolution", "texture_filtering", "antialiasing", "crt_filter",
-                       "scanlines", "scanline_strength", "hd_sprites", "hd_levels",
+                       "scanlines", "scanline_strength", "hd_sprites", "hd_levels", "hd_hud",
                        "perspective_texturing"}:
                 self.sync_preset_row()
             self.save_store()
@@ -387,6 +416,13 @@ class Launcher(Adw.Application):
         style.add(self.preset_hint)
         page.add(style)
         self.sync_preset_row()
+
+        self.widgets = getattr(self, "widgets", {})
+        ng = Adw.PreferencesGroup(title="Neues Spiel")
+        ng.add(self.row("combo", "start_level", "Startlevel",
+                        "Im Titelbild „Spiel starten“ wählen – das Spiel beginnt dann in diesem "
+                        "Level. Gilt nicht für Spielstände.", LEVELS))
+        page.add(ng)
 
         self.saves_group = Adw.PreferencesGroup(
             title="Spielstand",
@@ -606,6 +642,8 @@ class Launcher(Adw.Application):
                         "Herkules, Gegner, Gegenstände (4× hochskaliert)"))
         hd.add(self.row("switch", "hd_levels", "HD-Landschaft",
                         "Bäume, Boden, Gebäude der Level"))
+        hd.add(self.row("switch", "hd_hud", "HD-Anzeigen",
+                        "Lebensbalken, Medaillons, Wolkenrahmen, Schrift"))
         page.add(hd)
 
         t = Adw.PreferencesGroup(title="Texturen")
@@ -671,9 +709,12 @@ class Launcher(Adw.Application):
         if not hasattr(self, "summary"):
             return
         res = dict(RESOLUTIONS)[self.cfg["internal_resolution"]]
-        hd = [n for k, n in (("hd_sprites", "HD-Figuren"), ("hd_levels", "HD-Landschaft"))
+        hd = [n for k, n in (("hd_sprites", "HD-Figuren"), ("hd_levels", "HD-Landschaft"),
+                                     ("hd_hud", "HD-Anzeigen"))
               if self.cfg[k]]
         start = "Neues Spiel"
+        if self.cfg["start_level"] != "off":
+            start += f" ab Level {self.cfg['start_level']}"
         if self.selected_slot is not None:
             st = next((s for s in list_states() if s.slot == self.selected_slot), None)
             start = (self.slot_name(st) if st else None) or f"Platz {self.selected_slot + 1}"
@@ -687,16 +728,14 @@ class Launcher(Adw.Application):
         if self.game is not None:
             return
         self.play_btn.set_sensitive(False)
-        need = [p for p, on in (("sprites", self.cfg["hd_sprites"]), ("levels", self.cfg["hd_levels"]))
-                if on and not (self.cfg["hd_sprites"] and self.cfg["hd_levels"])
-                and variant_stale(self.build, p)]
-        if need:
+        parts = chosen_parts(self.cfg)
+        if variant_stale(self.build, parts):
             self.play_btn.set_label("HD-Pack wird vorbereitet …")
 
             def work():
                 err = None
                 try:
-                    build_variant(self.build, need[0])
+                    build_variant(self.build, parts)
                 except (OSError, subprocess.CalledProcessError) as e:
                     err = str(e)
                 GLib.idle_add(self.after_prepare, err)
@@ -710,12 +749,13 @@ class Launcher(Adw.Application):
             self.play_btn.set_sensitive(True)
             self.toast(f"HD-Pack: {err}")
             return False
-        pack = pack_for(self.build, self.cfg["hd_sprites"], self.cfg["hd_levels"])
+        pack = pack_for(self.build, chosen_parts(self.cfg))
         if pack is not None and not (pack / "replacements").is_dir():
             self.toast(f"Texture-Pack fehlt: {pack}")
             pack = None
         write_settings(self.build, self.cfg)
-        write_mod_state(self.build, pack)
+        write_mod_state(self.build, pack,
+                        self.cfg["start_level"] if self.selected_slot is None else "off")
 
         env = dict(os.environ)
         env.pop("PSX_LOAD_SLOT", None)
