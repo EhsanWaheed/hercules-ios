@@ -74,14 +74,15 @@ DEFAULTS = {
     "geometry_correction": False, "auto_skip_fmv": False, "rewind": True,
     "frequency": 48000, "spu_hq": True, "hd_sprites": True, "hd_levels": True,
     "hd_hud": True, "start_level": "off",
+    "crt_sim": False, "crt_mask": 0.5, "crt_bloom": 0.35,
 }
 PRESETS = {
     "original": dict(internal_resolution="native", texture_filtering="nearest",
-                     antialiasing=False, crt_filter="crt", scanlines=True,
+                     antialiasing=False, crt_filter="crt", scanlines=True, crt_sim=True,
                      scanline_strength=0.35, hd_sprites=False, hd_levels=False, hd_hud=False,
                      perspective_texturing=False),
     "hd": dict(internal_resolution="1080p", texture_filtering="nearest",
-               antialiasing=False, crt_filter="raw", scanlines=False,
+               antialiasing=False, crt_filter="raw", scanlines=False, crt_sim=False,
                hd_sprites=True, hd_levels=True, hd_hud=True),
 }
 VIDEO_KEYS = ["internal_resolution", "window_width", "fullscreen", "aspect_ratio", "vsync",
@@ -287,6 +288,9 @@ def write_settings(build, cfg):
     video = doc.setdefault("video", {})
     audio = doc.setdefault("audio", {})
     for k in VIDEO_KEYS:
+        if k == "scanlines":
+            video[k] = bool(cfg[k] or cfg.get("crt_sim"))
+            continue
         if k == "window_width" and not cfg[k]:
             video.pop(k, None)              # 0 = let the runtime fit the display
         else:
@@ -392,7 +396,7 @@ class Launcher(Adw.Application):
         self.cfg[key] = value
         if not self.updating:
             if key in {"internal_resolution", "texture_filtering", "antialiasing", "crt_filter",
-                       "scanlines", "scanline_strength", "hd_sprites", "hd_levels", "hd_hud",
+                       "scanlines", "scanline_strength", "crt_sim", "hd_sprites", "hd_levels", "hd_hud",
                        "perspective_texturing"}:
                 self.sync_preset_row()
             self.save_store()
@@ -584,7 +588,7 @@ class Launcher(Adw.Application):
             name = self.current_preset()
             self.preset_row.set_active_name(name)
             self.preset_hint.set_text({
-                "original": "Originalauflösung, Originalgrafik, Röhrenfernseher mit Scanlines.",
+                "original": "Originalauflösung, Originalgrafik, Röhrenbild (CRT-Simulation).",
                 "hd": "1080p mit HD-Figuren und HD-Landschaft, scharfe Pixel.",
                 "custom": "Eigene Mischung – unter Grafik und Bildfilter eingestellt."}[name])
             self.updating = False
@@ -658,26 +662,38 @@ class Launcher(Adw.Application):
         page.add(t)
         return page
 
+    def slider(self, key, title, subtitle=None, lo=5, hi=100):
+        row = Adw.ActionRow(title=title, subtitle=subtitle or "")
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, 5)
+        scale.set_hexpand(True)
+        scale.set_size_request(240, -1)
+        scale.set_value(self.cfg[key] * 100)
+        scale.set_draw_value(True)
+        scale.set_format_value_func(lambda _s, v: f"{v:.0f} %")
+        scale.connect("value-changed", lambda w: self.set(key, round(w.get_value() / 100, 2)))
+        row.add_suffix(scale)
+        self.widgets[key] = scale
+        return row
+
     def page_filter(self):
         page = Adw.PreferencesPage()
         g = Adw.PreferencesGroup(title="Bildschirm",
-                                 description="Imitiert einen alten Fernseher. Scanlines lassen "
-                                             "sich im Spiel mit F6 umschalten.")
+                                 description="Imitiert einen alten Fernseher. F6 schaltet "
+                                             "Scanlines bzw. die CRT-Simulation im Spiel um.")
         g.add(self.row("combo", "crt_filter", "Farbwiedergabe", None, SCREENS))
         g.add(self.row("switch", "scanlines", "Scanlines", "Dunkle Zeilen wie auf einer Röhre"))
-        strength = Adw.ActionRow(title="Stärke der Scanlines")
-        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 5, 100, 5)
-        scale.set_hexpand(True)
-        scale.set_size_request(240, -1)
-        scale.set_value(self.cfg["scanline_strength"] * 100)
-        scale.set_draw_value(True)
-        scale.set_format_value_func(lambda _s, v: f"{v:.0f} %")
-        scale.connect("value-changed",
-                      lambda s: self.set("scanline_strength", round(s.get_value() / 100, 2)))
-        strength.add_suffix(scale)
-        self.widgets["scanline_strength"] = scale
-        g.add(strength)
+        g.add(self.slider("scanline_strength", "Stärke der Scanlines",
+                          "Bei CRT-Simulation: wie schmal die Zeilen leuchten"))
         page.add(g)
+        crt = Adw.PreferencesGroup(
+            title="CRT-Simulation",
+            description="Röhrenbild nach Bisqwits crt-filter: Zeilen als Elektronenstrahl, "
+                        "RGB-Lochmaske, Leuchten heller Stellen. Schaltet die Scanlines mit ein. "
+                        "Am besten im Vollbild (ab ca. 1080 Pixel Höhe).")
+        crt.add(self.row("switch", "crt_sim", "CRT-Simulation"))
+        crt.add(self.slider("crt_mask", "Lochmaske", "Sichtbarkeit des RGB-Musters", 0, 100))
+        crt.add(self.slider("crt_bloom", "Leuchten", "Glühen um helle Stellen", 0, 100))
+        page.add(crt)
         return page
 
     def page_system(self):
@@ -719,7 +735,9 @@ class Launcher(Adw.Application):
             st = next((s for s in list_states() if s.slot == self.selected_slot), None)
             start = (self.slot_name(st) if st else None) or f"Platz {self.selected_slot + 1}"
         parts = [start, res, " + ".join(hd) or "Originalgrafik"]
-        if self.cfg["scanlines"]:
+        if self.cfg["crt_sim"]:
+            parts.append("CRT")
+        elif self.cfg["scanlines"]:
             parts.append("Scanlines")
         self.summary.set_text(" · ".join(parts))
 
@@ -761,6 +779,9 @@ class Launcher(Adw.Application):
         env.pop("PSX_LOAD_SLOT", None)
         if self.selected_slot is not None:
             env["PSX_LOAD_SLOT"] = str(self.selected_slot)
+        env["PSX_CRT"] = "1" if self.cfg["crt_sim"] else "0"
+        env["PSX_CRT_MASK"] = str(self.cfg["crt_mask"])
+        env["PSX_CRT_BLOOM"] = str(self.cfg["crt_bloom"])
         log = open(self.build / "launcher_last_run.log", "w")
         try:
             self.game = subprocess.Popen([str(self.exe), "--no-launcher"], cwd=self.build,
