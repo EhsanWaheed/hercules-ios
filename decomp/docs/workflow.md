@@ -63,7 +63,13 @@ Funktionsgrenzen, Symbolen und Ladeadresse.
 5. **Ergebnis prüfen:** jede Datei baut wieder byte-identisch (`make check`
    pro Datei).
 
-**Stand 12.10.:** Schritte 1, 2 und 5 erledigt. `make check-all` baut alle
+**Stand 12.10.:** Schritte 1, 2, 3 und 5 erledigt. PsyQ 3.7 in allen drei
+Engines (wie in der Startdatei); Namen in `config/symbol_addrs.{engine1,engine3,title}.txt`.
+Die Engines haben nur 23–69 eigene Bibliotheksfunktionen, die Overlays keine
+(Treffer dort sind kurze Allerwelts-Signaturen). Der Spielcode ruft
+**150 PsyQ-Funktionen** auf → `docs/psyq_usage.md` (`tools/psyq_usage.py`;
+Signaturen: `unzip ~/psx-decomp/tools/ghidra_psx_ldr.zip 'ghidra_psx_ldr/data/psyq/*'`).
+LIBGTE ist dort klein, weil die Engines GTE-Befehle direkt im Code haben. `make check-all` baut alle
 16 Dateien byte-identisch (Startdatei, ENGINE1/3, TITLE, OV0–OV11).
 
 | Datei | Ladeadresse | Code | Daten ab | Funktionen |

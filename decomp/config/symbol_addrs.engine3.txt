@@ -1,0 +1,34 @@
+// PsyQ 3.7 library functions (tools/psyq_sigmatch.py, ghidra_psx_ldr signatures).
+// Names that also exist in SCES_008.93 carry the prefix engine3_ so the linker cannot pick the boot copies.
+engine3___main = 0x80038350; // type:func
+engine3_stup2 = 0x80038358; // type:func
+engine3_stup1 = 0x8003837C; // type:func
+engine3_stup0 = 0x800383F8; // type:func
+SsInit = 0x80054080; // type:func
+ScaleMatrix = 0x8005FA94; // type:func
+SetGeomOffset = 0x8005FBC4; // type:func
+SetGeomScreen = 0x8005FBE4; // type:func
+RotMatrixYXZ = 0x8005FBF4; // type:func
+_patch_gte = 0x8005FE84; // type:func
+CdDiskReady = 0x8005FF24; // type:func
+CdGetDiskType = 0x80060040; // type:func
+SpuRGetAllKeysStatus = 0x800601B0; // type:func
+SpuGetAllKeysStatus = 0x80060280; // type:func
+SpuGetVoiceStartAddr = 0x80060308; // type:func
+SsUtKeyOn = 0x80060334; // type:func
+SsUtKeyOff = 0x800606D0; // type:func
+SsUtGetDetVVol = 0x800607E8; // type:func
+SsUtSetDetVVol = 0x80060840; // type:func
+SsUtGetVVol = 0x800608AC; // type:func
+SsUtSetVVol = 0x80060938; // type:func
+strncmp = 0x800609C4; // type:func
+__adddf3 = 0x800609D4; // type:func
+_add_mant_d = 0x80060D54; // type:func
+_dbl_shift = 0x80060E04; // type:func
+__fixdfsi = 0x80060ECC; // type:func
+__floatsidf = 0x80060FCC; // type:func
+_dbl_shift_us = 0x800610D0; // type:func
+_mainasu = 0x80061198; // type:func
+__muldf3 = 0x8006120C; // type:func
+_mul_mant_d = 0x80061520; // type:func
+_err_math = 0x80061610; // type:func
