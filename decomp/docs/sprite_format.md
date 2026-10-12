@@ -1,4 +1,4 @@
-# Sprite files (`SD1/`, `SD3/`, `SD4/`) -- work in progress
+# Sprite files (`SD1/`, `SD3/`, `SD4/`)
 
 All start with the tag `i1.4`. They are loaded by sector number from u16 LBA
 tables: ENGINE1 `0x80069E48` (SD1, 80 files), ENGINE3 `0x80061CE8` (SD3, 9),
@@ -70,3 +70,26 @@ Open points:
   ENGINE1 with the usual `lui 0x1F80` pattern; maybe copied from the file)
 - exact cell descriptor layout (size, VRAM placement, palette)
 - how the 5-bit output values map to pixels/palette
+
+## Decoder status (tools/sprites.py)
+
+`sprites.py check` decodes 10696 of 10697 non-empty frames exactly (the cell
+stream ends where the next frame starts); the exception is S4.1 frame 1.
+`sprites.py dump` writes one RGBA PNG per unique frame plus `meta.json`.
+
+Confirmed/assumed layout:
+- frame table entry k (1-based) at file+4+4k: `entry >> 8` = byte offset of
+  the frame from file+4 (0 = empty slot); low byte = **palette index**
+  (< palette count in 98.9% of frames; 120 outliers flagged in meta.json)
+- after the 8-byte run table: `m` u16 palette offsets (from file+4); each
+  palette = `20 00 20 00` + 32 colours, colour 0 = transparent
+- frame: u8 cell count, s8 X, 6 header bytes, X*6 extra bytes, cells (4 bytes
+  each), then the compressed stream for all cells in order
+- cell: byte 0 size (bits 0-1 width/8-1, bits 2-3 height/8-1, bit 7 = no own
+  pixel data), byte 1 unknown (nibbles mostly mirror the size), bytes 2/3
+  signed x/y offset from the frame anchor
+- pixel bytes: palette index in the low 5 bits
+
+Still to check visually / decode: bit-7 cells (37 frames have no drawn
+cells at all), meaning of byte 1, the 6 header bytes and X*6 extra bytes
+(likely bounding/hit boxes), palette outliers.
