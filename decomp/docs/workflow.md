@@ -183,7 +183,7 @@ Prüft nebenbei die Zerlege-Logik, die der Port später braucht.
 
 ## Reihenfolge der nächsten Schritte
 
-1. Emulator-Test mit HD-Sprites (oben).
+1. ~~Emulator-Test mit HD-Sprites (oben)~~ – erledigt, Ergebnis in `HANDOFF.md` (3b).
 2. objdiff-Bericht einrichten (Phase 0).
 3. Ladeadressen + splat für ENGINE3, TITLE, OV0–OV11 (Phase 1).
 4. PsyQ-Signaturen (Phase 1.3).
