@@ -78,6 +78,7 @@ static void on_decode(struct CPUState* cpu, uint32_t address) {
     for (uint32_t i = 0; i < MODULE_COUNT; i++)
         if ((k_modules[i].decode_site & 0x1FFFFFFFu) == (address & 0x1FFFFFFFu)) m = &k_modules[i];
     if (!m) return;
+    psx_mod_counter_add("hercules.hd-sprites.decode", 1);
     if (s_owner != m) s_count = 0; /* another file was loaded meanwhile */
     s_owner = m;
     if (s_count >= MAX_BLOCKS) {
@@ -136,6 +137,7 @@ static void on_flush(struct CPUState* cpu, uint32_t address) {
         psx_mod_counter_add("hercules.hd-sprites.foreign_code", 1);
         return;
     }
+    psx_mod_counter_add("hercules.hd-sprites.flush", 1);
     const uint32_t ra = cpu->gpr[REG_RA];
     s_in_flush = 1;
     (void)psx_mod_call_guest(cpu, m->flush, ra, 0, 0, 0, 0);
