@@ -85,3 +85,6 @@ target_sources(psx-runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native/hl_data.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native/hl_launcher.cpp")
 target_include_directories(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native")
+# The host's toasts ("Scanlines on", fast forward ...), which the framework
+# only shows with recomp-ui. The in-game menu itself is in hl_launcher.cpp.
+target_compile_definitions(psx-runtime PRIVATE PSX_HOST_OSD_VISUAL=1)

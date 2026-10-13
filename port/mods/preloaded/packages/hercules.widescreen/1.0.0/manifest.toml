@@ -20,3 +20,19 @@ default_enabled = false
 [[plugin]]
 feature = "widescreen"
 id = "hercules.widescreen"
+
+[[option]]
+feature = "widescreen"
+id = "aspect"
+label = "Aspect at start"
+description = "16:9 or 4:3 when the game starts; the in-game menu switches live."
+type = "choice"
+default = "16:9"
+
+[[option.choice]]
+value = "16:9"
+label = "16:9"
+
+[[option.choice]]
+value = "4:3"
+label = "4:3"

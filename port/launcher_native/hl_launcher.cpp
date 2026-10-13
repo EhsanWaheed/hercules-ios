@@ -26,6 +26,7 @@
 #include "hl_data.h"
 #include "hl_strings.h"
 #include "psx_game_launcher.h"
+#include "psx_game_menu.h"
 
 #ifdef _WIN32
 extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId(void);
@@ -353,9 +354,20 @@ void write_settings(const Ctx& c) {
     write_atomic(path, out);
 }
 
-void write_mod_state(const Ctx& c, const fs::path& pack, bool new_game) {
+// HD off with a pack present: an empty pack, so hercules.hd-sprites still loads
+// and the in-game menu can switch HD on without a restart.
+fs::path pack_none(const Ctx& c) {
+    const fs::path p = pack_base(c).parent_path() / (std::string(GAME_ID) + ".launcher-none");
+    std::error_code ec;
+    fs::create_directories(p / "replacements", ec);
+    if (!fs::exists(p / "config.yaml")) write_atomic(p / "config.yaml", "MaxVRAMWriteSplits: 64\n");
+    return p;
+}
+
+void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     const std::string level = new_game ? c.store.get("start_level") : "off";
     const bool wide = c.store.get("aspect_ratio") == "16:9";
+    const fs::path pack = !chosen.empty() ? chosen : hd_pack_ready(c) ? pack_none(c) : fs::path{};
     std::string t = "format_version = 2\n";
     for (const char* p : {"hercules.hd-sprites", "psx.enhancement.hd-textures", "hercules.level-select",
                           "hercules.widescreen", "hercules.skip-intro"})
@@ -369,7 +381,8 @@ void write_mod_state(const Ctx& c, const fs::path& pack, bool new_game) {
     feature("psx.enhancement.hd-textures", "hd-textures", false);
     feature("hercules.level-select", "level-select", level == "0");
     t += "\n[feature.values]\nlevel = " + toml_str(level) + "\n";
-    feature("hercules.widescreen", "widescreen", wide);
+    feature("hercules.widescreen", "widescreen", true);          // 4:3 too: the menu switches live
+    t += std::string("\n[feature.values]\naspect = ") + toml_str(wide ? "16:9" : "4:3") + "\n";
     feature("hercules.skip-intro", "skip-intro", c.store.b("skip_intro"));
     feature("hercules.skip-intro", "skip-memcard", c.store.b("skip_memcard"));
     feature("hercules.skip-intro", "direct-start", new_game);
@@ -945,12 +958,14 @@ void App::play(int slot) {
     write_settings(ctx);
     write_mod_state(ctx, pack, slot < 0);
     SDL_Environment* env = SDL_CreateEnvironment(true);
-    for (const char* k : {"PSX_LOAD_SLOT", "PSX_SCANLINES", "PSX_SCANLINE_STRENGTH", "PSX_NO_LAUNCHER"})
+    for (const char* k : {"PSX_LOAD_SLOT", "PSX_SCANLINES", "PSX_SCANLINE_STRENGTH", "PSX_NO_LAUNCHER", "PSX_VOLUME"})
         SDL_UnsetEnvironmentVariable(env, k);
     if (slot >= 0) SDL_SetEnvironmentVariable(env, "PSX_LOAD_SLOT", std::to_string(slot).c_str(), true);
     SDL_SetEnvironmentVariable(env, "PSX_CRT", ctx.store.b("crt_sim") ? "1" : "0", true);
     SDL_SetEnvironmentVariable(env, "PSX_CRT_MASK", ctx.store.get("crt_mask").c_str(), true);
     SDL_SetEnvironmentVariable(env, "PSX_CRT_BLOOM", ctx.store.get("crt_bloom").c_str(), true);
+    if (!ctx.store.get("volume").empty())
+        SDL_SetEnvironmentVariable(env, "PSX_VOLUME", ctx.store.get("volume").c_str(), true);
     const std::string exe = ctx.exe.u8string(), disc = ctx.disc.u8string();
     const char* args[] = {exe.c_str(), "--no-launcher", "--disc", disc.c_str(), nullptr};
     SDL_PropertiesID props = SDL_CreateProperties();
@@ -976,6 +991,7 @@ void App::play(int slot) {
     running = false;
     SDL_ShowWindow(win);
     SDL_RaiseWindow(win);
+    ctx.store.load();                          // changed in the in-game menu
     refresh_states();
     if (hd_wanted() && !ctx.store.b("hd_started")) set("hd_started", "true");   // HD build starts now
     if (code) show_message(T("err.exit", {{"n", std::to_string(code)}}));
@@ -1348,8 +1364,362 @@ int launcher_main(int argc, char** argv) {
     return 0;
 }
 
+// ======================================================== the in-game menu
+// Esc / Select+Start in the running game (psx_game_menu.h): the launcher's
+// options that work live, the controls, resume and back to the launcher. The
+// guest is frozen meanwhile. Drawn on the CPU into a window-sized image in
+// the launcher's look (the game's font and plaster from the disc); settings
+// go to launcher.ini, which the launcher reloads when the game ends.
+namespace ingame {
+
+struct Canvas {
+    int w = 0, h = 0, k = 1, ox = 0, oy = 0;      // stage px -> k window px, 4:3 stage area at ox
+    float sw = W;                                  // stage width incl. the sides
+    std::vector<uint32_t> px;
+    void resize(int ww, int wh) {
+        w = std::max(ww, 320); h = std::max(wh, 240);
+        k = std::max(1, h / 240);
+        oy = (h - 240 * k) / 2;
+        sw = float(w) / k;
+        ox = (w - 320 * k) / 2;
+        px.assign(size_t(w) * h, 0);
+    }
+    static uint32_t blend(uint32_t d, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+        if (a == 255) return 0xFF000000u | (uint32_t(r) << 16) | (uint32_t(g) << 8) | b;
+        const uint32_t da = d >> 24, dr = (d >> 16) & 255, dg = (d >> 8) & 255, db = d & 255;
+        const uint32_t oa = a + da * (255 - a) / 255;
+        if (!oa) return 0;
+        auto mix = [&](uint32_t s, uint32_t dd) { return (s * a + dd * da * (255 - a) / 255) / oa; };
+        return (oa << 24) | (mix(r, dr) << 16) | (mix(g, dg) << 8) | mix(b, db);
+    }
+    // stage rect (x relative to the 4:3 area), straight alpha colour
+    void fill(float x, float y, float fw, float fh, SDL_Color c) {
+        const int x0 = std::max(0, ox + int(x * k)), y0 = std::max(0, oy + int(y * k));
+        const int x1 = std::min(w, ox + int((x + fw) * k)), y1 = std::min(h, oy + int((y + fh) * k));
+        for (int yy = y0; yy < y1; ++yy)
+            for (int xx = x0; xx < x1; ++xx) px[size_t(yy) * w + xx] = blend(px[size_t(yy) * w + xx], c.r, c.g, c.b, c.a);
+    }
+    // src rect of an RGBA image to stage (dx, dy) at f stage px per source px
+    void blit(const Image& im, int sx, int sy, int sw_, int sh, float dx, float dy, float f = 1, uint8_t alpha = 255) {
+        const int x0 = ox + int(std::floor(dx * k)), y0 = oy + int(std::floor(dy * k));
+        const int ow = int(sw_ * f * k + 0.5f), oh = int(sh * f * k + 0.5f);
+        for (int yy = 0; yy < oh; ++yy) {
+            const int ty = y0 + yy;
+            if (ty < 0 || ty >= h) continue;
+            const int syy = sy + std::min(sh - 1, int(yy / (f * k)));
+            for (int xx = 0; xx < ow; ++xx) {
+                const int tx = x0 + xx;
+                if (tx < 0 || tx >= w) continue;
+                const uint8_t* s = im.at(sx + std::min(sw_ - 1, int(xx / (f * k))), syy);
+                const uint8_t a = uint8_t(s[3] * alpha / 255);
+                if (a) px[size_t(ty) * w + tx] = blend(px[size_t(ty) * w + tx], s[0], s[1], s[2], a);
+            }
+        }
+    }
+};
+
+struct Menu {
+    bool loaded = false, failed = false, open = false, dirty = true, quit_armed = false;
+    Ctx ctx;
+    Font font;
+    Image plaster;
+    Canvas cv;
+    int page = 0, row = 1;
+    uint32_t pad_prev = 0;
+    uint64_t pad_repeat_at = 0;
+};
+Menu m;
+
+std::string T(const std::string& key) {
+    std::string l = m.ctx.store.get("language");
+    if (!kStrings.count(l)) l = "en";
+    const auto& tbl = kStrings.at(l);
+    auto it = tbl.find(key);
+    return it == tbl.end() ? key : it->second;
+}
+
+const std::pair<int, int>& glyph(char32_t c) {
+    auto it = m.font.glyphs.find(upper(c));
+    return it == m.font.glyphs.end() ? m.font.glyphs.at(U' ') : it->second;
+}
+float text_width(const std::string& s, float f = 1) {
+    int w = 0;
+    for (char32_t c : utf32(s)) w += glyph(c).second + 1;
+    return std::max(0, w - 1) * f;
+}
+void text(const std::string& s, float x, float y, const char* color, const char* align = "left", float f = 1) {
+    const Image& atlas = std::strcmp(color, "blue") == 0 ? m.font.blue
+                       : std::strcmp(color, "orange") == 0 ? m.font.orange : m.font.yellow;
+    const float tw = text_width(s, f);
+    float cx = std::strcmp(align, "center") == 0 ? x - tw / 2 : std::strcmp(align, "right") == 0 ? x - tw : x;
+    for (char32_t c : utf32(s)) {
+        const auto& g = glyph(c);
+        m.cv.blit(atlas, g.first, 0, g.second, m.font.height, cx, y, f);
+        cx += (g.second + 1) * f;
+    }
+}
+
+// ------------------------------------------------------------------ pages
+struct MRow { std::string key; std::vector<std::pair<std::string, std::string>> choices; };
+struct MPage { std::string title; std::vector<MRow> rows; };
+
+std::vector<MPage> menu_pages() {
+    auto from_launcher = [](const char* key) {
+        for (const auto& [name, rows] : pages())
+            for (const auto& r : rows) if (r.key == key) return MRow{r.key, r.choices};
+        return MRow{key, kOnOff};
+    };
+    std::vector<MPage> out;
+    out.push_back({"pause", {{"act.resume", {}}, {"act.quit", {}}}});
+    MPage gfx{"gfx", {}};
+    if (hd_pack_ready(m.ctx))
+        for (const char* k : {"hd_sprites", "hd_levels", "hd_hud"}) gfx.rows.push_back(from_launcher(k));
+    for (const char* k : {"texture_filtering", "aspect_ratio"}) gfx.rows.push_back(from_launcher(k));
+    gfx.rows.push_back({"fullscreen", {{"0", "window"}, {"1", "full"}}});
+    for (const char* k : {"perspective_texturing", "geometry_correction"}) gfx.rows.push_back(from_launcher(k));
+    out.push_back(gfx);
+    MPage filter{"filter", {}};
+    for (const char* k : {"crt_sim", "crt_mask", "crt_bloom", "scanlines", "scanline_strength", "crt_filter"})
+        filter.rows.push_back(from_launcher(k));
+    out.push_back(filter);
+    MRow vol{"volume", {}};
+    for (int v = 0; v <= 100; v += 10) vol.choices.push_back({std::to_string(v), "=" + std::to_string(v) + " %"});
+    out.push_back({"sound", {vol}});
+    out.push_back({"keys", {}});
+    return out;
+}
+
+std::string value_of(const std::string& key) {
+    if (key == "volume") {
+        const std::string v = m.ctx.store.get("volume");
+        return v.empty() ? std::to_string(psx_host_get_volume()) : v;
+    }
+    if (key == "fullscreen") return psx_host_get_fullscreen() ? "1" : "0";
+    return m.ctx.store.get(key);
+}
+std::string label_of(const MRow& r) {
+    if (r.choices.empty()) return "";
+    const std::string l = r.choices[choice_index(value_of(r.key), r.choices)].second;
+    if (!l.empty() && l[0] == '=') return l.substr(1);
+    if (l == "on" || l == "off") return T(l);
+    return T("val." + l);
+}
+
+// ------------------------------------------------------------ apply live
+float num(const std::string& k, float def) {
+    const std::string v = m.ctx.store.get(k);
+    return v.empty() ? def : float(std::atof(v.c_str()));
+}
+void apply(const std::string& key) {
+    const auto& st = m.ctx.store;
+    if (key == "hd_sprites" || key == "hd_levels" || key == "hd_hud") {
+        const fs::path pack = pack_for(m.ctx);
+        psx_host_set_hd_pack(pack.empty() ? "" : pack.u8string().c_str());
+    } else if (key == "texture_filtering") {
+        const std::string v = st.get(key);
+        psx_host_set_texture_filter(v == "bilinear" ? 1 : v == "xbr" ? 3 : 0);
+    } else if (key == "aspect_ratio") {
+        if (st.get(key) == "16:9") psx_host_set_display_aspect(16, 9);
+        else psx_host_set_display_aspect(4, 3);
+    } else if (key == "fullscreen") {
+        psx_host_set_fullscreen(st.get(key) == "0" ? 0 : 1);
+    } else if (key == "perspective_texturing") {
+        psx_host_set_perspective(st.b(key));
+    } else if (key == "geometry_correction") {
+        psx_host_set_geometry(st.b(key));
+    } else if (key == "crt_sim" || key == "crt_mask" || key == "crt_bloom" || key == "scanlines" ||
+               key == "scanline_strength") {
+        psx_host_set_crt(st.b("crt_sim"), num("crt_mask", 0.5f), num("crt_bloom", 0.35f));
+        psx_host_set_scanlines(st.b("scanlines") || st.b("crt_sim"), num("scanline_strength", 0.35f));
+    } else if (key == "crt_filter") {
+        const std::string v = st.get(key);
+        psx_host_set_screen_kind(v == "crt" ? 1 : v == "composite" ? 2 : v == "trinitron" ? 3 : 0);
+    } else if (key == "volume") {
+        psx_host_set_volume(std::atoi(st.get(key).c_str()));
+    }
+}
+
+// --------------------------------------------------------------- drawing
+void render() {
+    int ww = 0, wh = 0;
+    psx_host_window_size(&ww, &wh);
+    if (ww <= 0 || wh <= 0) { ww = 1280; wh = 960; }
+    m.cv.resize(ww, wh);
+    const float left = -float(m.cv.ox) / m.cv.k;
+    m.cv.fill(left, -float(m.cv.oy) / m.cv.k, m.cv.sw, float(m.cv.h) / m.cv.k, {8, 3, 2, 170});   // dim the game
+    if (!m.plaster.empty()) m.cv.blit(m.plaster, 0, 0, m.plaster.w, std::min(m.plaster.h, 240), 0, 0, 1, 238);
+    const auto ps = menu_pages();
+    const MPage& pg = ps[size_t(m.page) % ps.size()];
+    text("< " + T("pages." + pg.title) + " >", W / 2.0f, 6, m.row == 0 ? "blue" : "yellow", "center");
+    if (pg.title == "keys") {
+        std::string l = m.ctx.store.get("language");
+        if (!kStrings.count(l)) l = "en";
+        for (int i = 0; i < 20; ++i) {
+            auto it = kStrings.at(l).find("ingame.keys." + std::to_string(i));
+            if (it == kStrings.at(l).end()) break;
+            const std::string& line = it->second;
+            const size_t bar = line.find('|');
+            const float y = 32 + i * 13.5f;
+            text(line.substr(0, bar), 14, y, "orange", "left", 0.6f);
+            if (bar != std::string::npos) text(line.substr(bar + 1), 108, y, "yellow", "left", 0.6f);
+        }
+    } else {
+        for (size_t i = 0; i < pg.rows.size(); ++i) {
+            const MRow& r = pg.rows[i];
+            const bool active = m.row == int(i) + 1;
+            const float y = 38 + i * 21;
+            if (r.choices.empty()) {             // an action
+                std::string label = T("ingame." + r.key.substr(4));
+                if (r.key == "act.quit" && m.quit_armed) label = T("ingame.quit_sure");
+                text(label, W / 2.0f, 40 + i * 30, active ? "blue" : "yellow", "center");
+            } else {
+                text(T("opt." + r.key), 14, y, active ? "blue" : "yellow", "left", 0.85f);
+                text(label_of(r), 306, y, active ? "blue" : "orange", "right", 0.85f);
+            }
+        }
+        if (pg.title == "pause") text(T("ingame.hint"), W / 2.0f, 150, "orange", "center", 0.6f);
+    }
+    text(T("help_back"), W / 2.0f, 218, "yellow", "center", 0.7f);
+    m.dirty = false;
+}
+
+// ---------------------------------------------------------------- input
+void close_menu() { m.open = false; m.quit_armed = false; }
+
+void step(int d) {
+    const auto ps = menu_pages();
+    const int np = int(ps.size());
+    if (m.row == 0) { m.page = (m.page + d + np) % np; m.quit_armed = false; m.dirty = true; return; }
+    const MPage& pg = ps[size_t(m.page)];
+    if (m.row - 1 >= int(pg.rows.size())) return;
+    const MRow& r = pg.rows[size_t(m.row - 1)];
+    if (r.choices.empty()) {                     // actions: on OK only
+        if (d != 0) return;
+        if (r.key == "act.resume") close_menu();
+        else if (r.key == "act.quit") {
+            if (!m.quit_armed) { m.quit_armed = true; m.dirty = true; return; }
+            m.ctx.store.save();
+            psx_host_quit();
+        }
+        return;
+    }
+    const int n = int(r.choices.size());
+    const int dd = d == 0 ? 1 : d;
+    const std::string nv = r.choices[size_t((choice_index(value_of(r.key), r.choices) + dd + n) % n)].first;
+    m.ctx.store.kv[r.key] = nv;
+    m.ctx.store.save();
+    apply(r.key);
+    m.dirty = true;
+}
+
+void nav(Key k) {
+    const auto ps = menu_pages();
+    const MPage& pg = ps[size_t(m.page) % ps.size()];
+    const int n = int(pg.rows.size()) + 1;
+    if (k != Key::Ok) m.quit_armed = false;
+    switch (k) {
+    case Key::Up: m.row = (m.row + n - 1) % n; break;
+    case Key::Down: m.row = (m.row + 1) % n; break;
+    case Key::Left: step(-1); break;
+    case Key::Right: step(1); break;
+    case Key::Ok: if (m.row == 0) step(1); else step(0); break;
+    case Key::Back: close_menu(); break;
+    default: return;
+    }
+    m.dirty = true;
+}
+
+// ---------------------------------------------------------------- hooks
+bool load() {
+    if (m.loaded) return !m.failed;
+    m.loaded = true;
+    Ctx& c = m.ctx;
+    const char* base = SDL_GetBasePath();
+    c.exe_dir = base ? fs::u8path(base) : fs::current_path();
+    c.game_toml = c.exe_dir / "game.toml";
+    c.game = toml_flat(read_text(c.game_toml));
+    c.store.path = c.exe_dir / "launcher.ini";
+    c.store.load();
+    c.disc = find_disc(c);
+    Disc d;
+    std::vector<uint8_t> b;
+    std::string err;
+    if (c.disc.empty() || !d.open(c.disc, &err) || !d.read("STP/STP1.", b) || !build_font(b, m.font, &err)) {
+        std::fprintf(stderr, "hercules menu: no disc art (%s)\n", err.c_str());
+        m.failed = true;
+        return false;
+    }
+    std::fprintf(stderr, "hercules menu: %s, HD pack %s\n", c.exe_dir.u8string().c_str(),
+                 hd_pack_ready(c) ? "found" : "not found");
+    if (d.read("TI/T03.0", b)) {
+        auto ims = decode_fullscreen(b);
+        if (!ims.empty()) m.plaster = std::move(ims[0]);
+    }
+    return true;
+}
+
+void hook_open() {
+    if (!load()) { psx_host_osd("Menu unavailable: disc art not found", 2500); return; }
+    m.ctx.store.load();
+    m.open = true;
+    m.page = 0;
+    m.row = 1;
+    m.quit_armed = false;
+    m.pad_prev = psx_host_p1_buttons();          // the opening chord is not a press
+    m.dirty = true;
+}
+int hook_is_open() { return m.open ? 1 : 0; }
+void hook_key(int key, int, int, int repeat) {
+    switch (key) {
+    case SDLK_UP: nav(Key::Up); break;
+    case SDLK_DOWN: nav(Key::Down); break;
+    case SDLK_LEFT: nav(Key::Left); break;
+    case SDLK_RIGHT: nav(Key::Right); break;
+    case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: case SDLK_X: if (!repeat) nav(Key::Ok); break;
+    case SDLK_ESCAPE: case SDLK_BACKSPACE: if (!repeat) nav(Key::Back); break;
+    default: break;
+    }
+}
+void hook_tick(uint32_t now) {
+    const uint32_t b = psx_host_p1_buttons();
+    auto bit = [](int code) { return 1u << code; };
+    const uint32_t pressed = b & ~m.pad_prev;
+    const uint32_t dirs = bit(SDL_GAMEPAD_BUTTON_DPAD_UP) | bit(SDL_GAMEPAD_BUTTON_DPAD_DOWN) |
+                          bit(SDL_GAMEPAD_BUTTON_DPAD_LEFT) | bit(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+    uint32_t fire = pressed;
+    if (b & dirs) {                              // held direction: repeat
+        if (pressed & dirs) m.pad_repeat_at = now + 350;
+        else if (now >= m.pad_repeat_at) { fire |= b & dirs; m.pad_repeat_at = now + 110; }
+    }
+    m.pad_prev = b;
+    if (fire & bit(SDL_GAMEPAD_BUTTON_DPAD_UP)) nav(Key::Up);
+    if (fire & bit(SDL_GAMEPAD_BUTTON_DPAD_DOWN)) nav(Key::Down);
+    if (fire & bit(SDL_GAMEPAD_BUTTON_DPAD_LEFT)) nav(Key::Left);
+    if (fire & bit(SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) nav(Key::Right);
+    if (pressed & bit(SDL_GAMEPAD_BUTTON_SOUTH)) nav(Key::Ok);
+    if (pressed & (bit(SDL_GAMEPAD_BUTTON_EAST) | bit(SDL_GAMEPAD_BUTTON_NORTH) | bit(SDL_GAMEPAD_BUTTON_START)))
+        nav(Key::Back);
+}
+int hook_image(const uint32_t** px, int* w, int* h) {
+    if (!m.open) return 0;
+    int ww = 0, wh = 0;
+    psx_host_window_size(&ww, &wh);
+    if (m.dirty || std::max(ww, 320) != m.cv.w || std::max(wh, 240) != m.cv.h) render();
+    *px = m.cv.px.data();
+    *w = m.cv.w;
+    *h = m.cv.h;
+    return 1;
+}
+
+const PsxGameMenuHooks kHooks = {hook_open, hook_is_open, hook_key, hook_tick, hook_image};
+
+}  // namespace ingame
+
 struct Register {
-    Register() { psx_game_launcher_register(&launcher_main); }
+    Register() {
+        psx_game_launcher_register(&launcher_main);
+        psx_game_menu_register(&ingame::kHooks);
+    }
 } g_register;
 
 }  // namespace
