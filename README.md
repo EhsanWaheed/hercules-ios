@@ -26,17 +26,40 @@ Fan project, not affiliated with or endorsed by Disney or Sony.
 
 ## Getting started
 
+Only the **German PAL release (SCES-00893)** works: the port, its mods and
+the HD pack are tied to that exact disc. US, Japanese and other PAL versions
+are not supported. Tested on Linux (Fedora).
+
+Needs GCC/G++, CMake ≥ 3.20, Ninja, pkg-config, git, Python 3 with numpy and
+Pillow, and for the launcher PyGObject with GTK 4, libadwaita and
+WebKitGTK 6.0.
+
 ```sh
 git clone --recursive https://github.com/obaidr1/hercules-recompiled
-cd hercules-recompiled/port/psxrecomp
-git am ../patches/psxrecomp/*.patch
+cd hercules-recompiled/port
+git -C psxrecomp apply ../patches/psxrecomp/*.patch
+mkdir -p disc   # copy your dump here, Redump names:
+                # "Disneys Hercules Action-Spiel (Germany).cue" + ".bin"
+./psxrecomp/tools/ci/build_emitters.sh
+python3 psxrecomp/psxrecomp_cli.py generate --config game.toml --project-root . \
+    --disc "disc/Disneys Hercules Action-Spiel (Germany).cue"
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target psx-runtime
+python3 launcher/build_assets.py --sd   # launcher art from your disc
+./hercules-launcher
 ```
 
-Then follow `decomp/docs/workflow.md` (extracting your disc, building the
-decomp) and `port/psxrecomp/docs/GAME_PROJECT_SETUP.md` (building the port).
-Some scripts still assume the original local layout
-(`~/psx-decomp/hercules` for `decomp/`, `~/psx-decomp/HerculesRecomp` for
-`port/`); symlinking those paths is the quickest way to use them unchanged.
+**HD graphics** are made from your disc on your PC (first start of the
+launcher asks; about 4 hours on a laptop CPU). They need a Python with torch
+and spandrel (e.g. the one bundled with [chaiNNer](https://chainner.app)) and
+three upscaling models you download yourself (their licences forbid
+redistribution), placed in `~/psx-decomp/models/` (or `$HERC_MODELS`):
+
+- `IllustrationJaNai/4x_IllustrationJaNai_V1_DAT2_190k.pth`
+- `Models/HDcube/4xHDCube4Compact.pth`
+- `Models/HDcube/4xHDcube-Alpha.pth`
+
+`decomp/tools/hd_pack_build.py` runs the same build from the command line.
 
 `decomp/docs/HANDOFF.md` is the running project log (German): current state,
 formats, how each mod hooks the game, and open tasks.
