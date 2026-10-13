@@ -1,0 +1,331 @@
+From 097d03a6986d16aff2f0adc6301ed022fef40d06 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 18:31:20 +0200
+Subject: [PATCH] Title in-game menu hook, live presentation setters, OSD
+ without recomp-ui
+
+psx_game_menu.h: a title registers its own menu; Esc or Select+Start opens
+it, the guest freezes as for the save-state menu, keys go to the menu and its
+image is composited over the held frame (overlay slot of the save-state
+menu). Start stays away from the guest while Select is held. psx_host_*
+change scanlines, CRT, colour model, texture filter, 16:9/4:3, fullscreen,
+volume, HD pack, perspective and geometry live. PSX_VOLUME sets the start
+volume; PSX_HOST_OSD_VISUAL shows the host toasts without recomp-ui.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/psx_game_menu.h |  53 ++++++++++++
+ runtime/src/gpu_gl_renderer.c   |   4 +-
+ runtime/src/host_osd.c          |   3 +-
+ runtime/src/main.cpp            | 144 ++++++++++++++++++++++++++++++++
+ 4 files changed, 202 insertions(+), 2 deletions(-)
+ create mode 100644 runtime/include/psx_game_menu.h
+
+diff --git a/runtime/include/psx_game_menu.h b/runtime/include/psx_game_menu.h
+new file mode 100644
+index 0000000..25d8aec
+--- /dev/null
++++ b/runtime/include/psx_game_menu.h
+@@ -0,0 +1,53 @@
++#pragma once
++/* A title's own in-game menu (options, help), drawn and run by the game.
++ *
++ * The title registers hooks (usually from a static constructor). The host
++ * opens it on Esc or Select+Start, freezes the guest like the save-state
++ * menu, sends keys to it and composites its image over the held frame, full
++ * window, until it closes. While Select is held, Start stays away from the
++ * guest so the chord does not also open the game's own pause screen.
++ *
++ * psx_host_* change presentation settings live (no restart) for such a menu.
++ */
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct PsxGameMenuHooks {
++    void (*open)(void);
++    int  (*is_open)(void);
++    /* SDL keycode / scancode / modifiers of a key press while open */
++    void (*key)(int keycode, int scancode, int mod, int repeat);
++    /* once per host loop while open (pad navigation, animation) */
++    void (*tick)(uint32_t now_ms);
++    /* 0xAARRGGBB image stretched over the whole window; 0 = nothing */
++    int  (*image)(const uint32_t **pixels, int *w, int *h);
++} PsxGameMenuHooks;
++
++void psx_game_menu_register(const PsxGameMenuHooks *hooks);
++
++/* host side, for the menu */
++int      psx_game_menu_overlay_image(const uint32_t **pixels, int *w, int *h);
++void     psx_host_window_size(int *w, int *h);         /* drawable pixels */
++uint32_t psx_host_p1_buttons(void);                     /* SDL gamepad button mask, P1 */
++void     psx_host_osd(const char *message, int ms);
++void     psx_host_quit(void);                            /* leave the game */
++
++void psx_host_set_scanlines(int on, float strength);
++void psx_host_set_crt(int on, float mask, float bloom);
++void psx_host_set_screen_kind(int kind);                 /* 0 raw 1 crt 2 composite 3 trinitron */
++void psx_host_set_texture_filter(int mode);              /* 0 nearest 1 bilinear 3 xbr */
++int  psx_host_set_display_aspect(int num, int den);      /* 16:9 native-wide or 4:3 */
++void psx_host_set_fullscreen(int mode);                  /* 0 window 1 borderless 2 exclusive */
++int  psx_host_get_fullscreen(void);
++void psx_host_set_volume(int percent);
++int  psx_host_get_volume(void);
++int  psx_host_set_hd_pack(const char *root);             /* NULL/"" = off */
++void psx_host_set_perspective(int on);
++void psx_host_set_geometry(int on);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
+index cbbc7a7..d244963 100644
+--- a/runtime/src/gpu_gl_renderer.c
++++ b/runtime/src/gpu_gl_renderer.c
+@@ -90,6 +90,7 @@
+ #include "mod_plugins.h"      /* PSX_MOD_RENDER_PASS_* reasons */
+ #include "host_osd.h"
+ #include "psx_savestate_menu.h"
++#include "psx_game_menu.h"
+ #include "psx_debug_overlay.h"
+ #include "host_time.h"
+ #include "latency_ring.h"
+@@ -9262,7 +9263,8 @@ static int ov_image(int i, const uint32_t **px, int *w, int *h) {
+     case 0: return host_osd_image(px, w, h);
+     case 1: return host_osd_volume_image(px, w, h);
+     case 2: return psx_rewind_overlay_image(px, w, h);
+-    case 3: return psx_savestate_menu_overlay_image(px, w, h);
++    case 3: return psx_game_menu_overlay_image(px, w, h) ||
++                   psx_savestate_menu_overlay_image(px, w, h);
+     default: return psx_dbgov_overlay_image(px, w, h);
+     }
+ }
+diff --git a/runtime/src/host_osd.c b/runtime/src/host_osd.c
+index a4a4348..3562844 100644
+--- a/runtime/src/host_osd.c
++++ b/runtime/src/host_osd.c
+@@ -11,7 +11,8 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
+-#if defined(RECOMP_LAUNCHER)
++/* PSX_HOST_OSD_VISUAL: a title with its own launcher still wants the toasts. */
++#if defined(RECOMP_LAUNCHER) || defined(PSX_HOST_OSD_VISUAL)
+ #define HOST_OSD_VISUAL 1
+ #else
+ #define HOST_OSD_VISUAL 0
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 2a78d2a..9c7a994 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -125,6 +125,8 @@ extern "C" void psx_event_step_conservative_env_init(void);
+ #include "sbi_setup.h"
+ #include "disc_path.h"
+ #include "psx_game_launcher.h" /* title-provided launcher hook */
++#include "psx_game_menu.h"     /* title-provided in-game menu */
++#include "gpu_hd_textures.h"
+ #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
+ #include "psx_keybinds.h"    /* configurable keyboard->DualShock keybinds (keybinds.ini) */
+ #include "psx_window_icon.h"
+@@ -7614,6 +7616,11 @@ static int hotkey_shortcut_down(int shortcut, int binding) {
+  * shortcuts leave the guest pad (claimed, and through release once claimed
+  * while held). Rewind claims its button only while Rewind is enabled and the
+  * title has not blocked it. */
++/* Title in-game menu (psx_game_menu.h): Esc / Select+Start. */
++static const PsxGameMenuHooks* g_game_menu = nullptr;
++extern "C" void psx_game_menu_register(const PsxGameMenuHooks* hooks) { g_game_menu = hooks; }
++static bool game_menu_open() { return g_game_menu && g_game_menu->is_open && g_game_menu->is_open(); }
++
+ static void direct_shortcut_claim_update(void) {
+     const int bindings[PSX_ASSIST_BIND_COUNT] = {
+         g_hotkey_pad_rewind, g_hotkey_pad_save_state_menu,
+@@ -7627,6 +7634,10 @@ static void direct_shortcut_claim_update(void) {
+     }
+     for (int code = 0; code < SDL_CONTROLLER_BUTTON_MAX && code < 32; ++code)
+         if (p1_host_button_down(nullptr, code)) held |= 1u << code;
++    /* Select+Start opens the title menu: Start never reaches the guest while
++     * Select is held (and, once taken, until it is released). */
++    if (g_game_menu && (held & (1u << SDL_CONTROLLER_BUTTON_BACK)))
++        claimed |= 1u << SDL_CONTROLLER_BUTTON_START;
+     g_p1_claimed_buttons =
+         psx_hotkey_claim_update(&g_p1_claim_latched, claimed, held);
+ }
+@@ -8070,6 +8081,125 @@ static void savestate_menu_host_pause_loop(void) {
+     savestate_input_guard_arm();
+ }
+ 
++/* ---- title in-game menu (psx_game_menu.h) ---------------------------------- */
++static void game_menu_poll_toggle_buttons(void) {
++    static int was_down;
++    if (!g_game_menu || !p1_host_present()) { was_down = 0; return; }
++    const int down = p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_BACK) &&
++                     p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_START);
++    if (down && !was_down && !savestate_menu_open && !psx_rewind_is_open() &&
++        !psx_netplay_active() && !game_menu_open())
++        g_game_menu->open();
++    was_down = down;
++}
++
++/* Freeze guest in vblank present while the title's menu is open. */
++static void game_menu_host_pause_loop(void) {
++    psx_local_mouse_begin(sdl_window, false);
++    psx_local_mouse_reset();
++    freeze_heartbeat_set_paused(1);
++    while (game_menu_open()) {
++#ifndef PSX_NO_DEBUG_TOOLS
++        debug_server_poll();     /* scripted runs drive the menu through the host pad layer */
++#endif
++        SDL_Event ev;
++        while (SDL_PollEvent(&ev)) {
++            (void)psx_local_mouse_event(ev);
++            if (ev.type == SDL_QUIT) {
++                psx_crash_trace_set_exit_origin("sdl_window_close");
++                shutdown_runtime();
++                std::exit(0);
++            } else if (ev.type == SDL_CONTROLLERDEVICEADDED) {
++                refresh_player_devices();
++            } else if (ev.type == SDL_CONTROLLERDEVICEREMOVED) {
++                close_controller();
++                refresh_player_devices();
++            } else if (ev.type == SDL_KEYDOWN && g_game_menu->key) {
++#if defined(PSX_SDL3)
++                g_game_menu->key((int)ev.key.key, (int)ev.key.scancode, (int)ev.key.mod, ev.key.repeat ? 1 : 0);
++#else
++                g_game_menu->key((int)ev.key.keysym.sym, (int)ev.key.keysym.scancode, (int)ev.key.keysym.mod,
++                                 ev.key.repeat ? 1 : 0);
++#endif
++            }
++        }
++        SDL_GameControllerUpdate();
++        if (g_game_menu->tick) g_game_menu->tick((uint32_t)SDL_GetTicks());
++        rewind_pause_present();
++        starvation_watchdog_heartbeat();
++        SDL_Delay(8);
++    }
++    freeze_heartbeat_set_paused(0);
++    savestate_input_guard_arm();   /* the closing press must not reach the game */
++}
++
++extern "C" int psx_game_menu_overlay_image(const uint32_t** px, int* w, int* h) {
++    if (!game_menu_open() || !g_game_menu->image) return 0;
++    return g_game_menu->image(px, w, h);
++}
++extern "C" void psx_host_window_size(int* w, int* h) {
++    int ww = 0, wh = 0;
++#if defined(PSX_SDL3)
++    if (sdl_window) SDL_GetWindowSizeInPixels(sdl_window, &ww, &wh);
++#else
++    if (sdl_window) SDL_GL_GetDrawableSize(sdl_window, &ww, &wh);
++#endif
++    if (w) *w = ww;
++    if (h) *h = wh;
++}
++extern "C" uint32_t psx_host_p1_buttons(void) {
++    uint32_t m = 0;
++    if (!p1_host_present()) return 0;
++    for (int code = 0; code < SDL_CONTROLLER_BUTTON_MAX && code < 32; ++code)
++        if (p1_host_button_down(nullptr, code)) m |= 1u << code;
++    const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
++    const int ly = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTY);
++    if (lx < -20000) m |= 1u << SDL_CONTROLLER_BUTTON_DPAD_LEFT;
++    if (lx > 20000) m |= 1u << SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
++    if (ly < -20000) m |= 1u << SDL_CONTROLLER_BUTTON_DPAD_UP;
++    if (ly > 20000) m |= 1u << SDL_CONTROLLER_BUTTON_DPAD_DOWN;
++    return m;
++}
++extern "C" void psx_host_osd(const char* message, int ms) { host_osd_push(message, ms); }
++extern "C" void psx_host_quit(void) {
++    psx_crash_trace_set_exit_origin("game_menu_quit");
++    shutdown_runtime();
++    std::exit(0);
++}
++extern "C" void psx_host_set_scanlines(int on, float strength) { psx_video_set_scanlines(on, strength); }
++extern "C" void psx_host_set_crt(int on, float mask, float bloom) { gl_renderer_set_crt(on, mask, bloom); }
++extern "C" void psx_host_set_screen_kind(int kind) { g_video_screen = kind; gpu_set_screen_kind(kind); }
++extern "C" void psx_host_set_texture_filter(int mode) {
++    if (mode < 0 || mode > 3) mode = 0;
++    g_video_texfilter = mode;
++    gr_set_texture_filter(mode);
++}
++extern "C" int psx_host_set_display_aspect(int num, int den) {
++    if (num * 3 != den * 4) psx_ws_set_native_wide(1);
++    return psx_debug_display_aspect(num, den, 0);
++}
++extern "C" void psx_host_set_fullscreen(int mode) {
++    if (mode && mode != 2) mode = 1;
++    if (mode) g_fullscreen = mode;
++    (void)psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, mode);
++}
++extern "C" int psx_host_get_fullscreen(void) { return s_window_fullscreen.mode; }
++extern "C" void psx_host_set_volume(int percent) { host_volume_set(percent); }
++extern "C" int psx_host_get_volume(void) { return host_volume_get(); }
++extern "C" int psx_host_set_hd_pack(const char* root) {
++    char error[512] = "";
++    if (!root || !root[0]) { gpu_hd_textures_shutdown(); return 1; }
++    if (!gpu_hd_textures_configure(root, 1, 0, error, sizeof error)) {
++        std::fprintf(stderr, "psxrecomp: HD textures: %s\n", error);
++        return 0;
++    }
++    return 1;
++}
++extern "C" void gte_geometry_correction_set(int enabled);
++extern "C" void gpu_texture_correction_set(int enabled);
++extern "C" void psx_host_set_perspective(int on) { gpu_texture_correction_set(on ? 1 : 0); }
++extern "C" void psx_host_set_geometry(int on) { gte_geometry_correction_set(on ? 1 : 0); }
++
+ /* Epilogue for netplay admit/pace AFTER all C++ RAII in the present body
+  * is destroyed — episode snap load longjmps via psx_netplay_rb_flush_resume and
+  * must not cross non-trivial destructors (UB / guest crash). */
+@@ -8221,6 +8351,12 @@ static bool drain_host_events() {
+                 netplay_soft_exit("netplay_escape");
+                 return false;
+             }
++            if (key == SDLK_ESCAPE && !key_repeat && g_game_menu && !savestate_menu_open &&
++                !psx_rewind_is_open() && !game_menu_open()) {
++                psx_local_mouse_reset();
++                g_game_menu->open();
++                continue;
++            }
+ #ifndef PSX_NO_DEBUG_TOOLS
+             /* Debug-tools builds: live rendering A/B keys 0-9 (consumed). */
+             if (!key_repeat && !(mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) &&
+@@ -8511,12 +8647,15 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+         savestate_menu_poll_toggle_buttons();
+         rewind_poll_toggle_buttons();
+         fast_forward_toggle_poll_buttons();
++        game_menu_poll_toggle_buttons();
+         psx_rewind_note_frame();
+         psx_rewind_present_tick((uint32_t)SDL_GetTicks());
+         if (savestate_menu_open)
+             savestate_menu_host_pause_loop();
+         if (psx_rewind_is_open())
+             rewind_host_pause_loop();
++        if (game_menu_open())
++            game_menu_host_pause_loop();
+     } else if (host_pad_layer(nullptr, nullptr, nullptr, nullptr)) {
+         /* Headless with the debug host layer: the host shortcuts that need no
+          * window (Rewind capture/open, fast-forward latch) poll as they would
+@@ -8903,6 +9042,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+                 // A hotkey acquired during pacing may open a host menu.
+                 if (savestate_menu_open) savestate_menu_host_pause_loop();
+                 if (psx_rewind_is_open()) rewind_host_pause_loop();
++                if (game_menu_open()) game_menu_host_pause_loop();
+                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+             } else {
+                 SDL_PumpEvents(); // retain native timing when no policy exists
+@@ -18879,6 +19019,10 @@ session_reboot:
+         if (const char* b = std::getenv("PSX_CRT_BLOOM")) bloom = (float)atof(b);
+         gl_renderer_set_crt(*e && *e != '0', mask, bloom);
+     }
++    /* PSX_VOLUME=0..100: the host volume a title's launcher remembered. */
++    if (const char* e = std::getenv("PSX_VOLUME")) {
++        if (*e) host_volume_set(atoi(e));
++    }
+     if (pgxp_arm.geometry || pgxp_arm.texture) {
+         std::fprintf(stdout,
+                      "psxrecomp: geometry correction %s, perspective texturing %s%s%s%s\n",
+-- 
+2.56.0
+

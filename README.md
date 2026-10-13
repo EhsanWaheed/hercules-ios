@@ -36,6 +36,9 @@ Checksums and release notes: [latest release](https://github.com/obaidr1/hercule
    `disc.cfg` next to the program.
 4. Choose a level in the launcher. Keyboard, mouse and gamepads work; F11
    toggles fullscreen.
+5. In the game, **Esc** (gamepad: **Select + Start**) opens the menu:
+   HD on/off, CRT picture, 16:9 or 4:3, volume, the controls and more,
+   all switched live. Every key is listed in [CONTROLS.md](port/CONTROLS.md).
 
 Windows shows a SmartScreen warning because the program is not signed:
 click **More info → Run anyway**.
@@ -63,7 +66,7 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 | [`decomp/`](decomp) | Decompilation of the main executable and the overlays (splat + GCC 2.7.2 / maspsx, byte-identical rebuild), file-format notes (levels, sprites, videos), tools for extraction, HD upscaling and texture packs |
 | [`port/`](port) | The PC port, built on [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp): game configuration, game-specific mods (HD sprites, widescreen, level select, skip intro / direct start) and the launcher |
 | `port/psxrecomp` | Submodule: the upstream framework |
-| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Three framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher) |
+| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Four framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings) |
 
 ## Getting started
 
@@ -79,7 +82,7 @@ WebKitGTK 6.0.
 ```sh
 git clone --recursive https://github.com/obaidr1/hercules-recompiled
 cd hercules-recompiled/port
-cd psxrecomp && git apply ../patches/psxrecomp/*.patch && cd ..
+cd psxrecomp && for p in ../patches/psxrecomp/*.patch; do git apply "$p"; done && cd ..
 mkdir -p disc   # copy your dump here, Redump names:
                 # "Disneys Hercules Action-Spiel (Germany).cue" + ".bin"
 ./psxrecomp/tools/ci/build_emitters.sh
