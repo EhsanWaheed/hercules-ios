@@ -33,6 +33,7 @@ const STR = {
              "DIE HYDRA", "DIE GROTTE DER MEDUSA", "KAMPF DEM ZYKLOPEN!", "DER FLUG DER TITANEN",
              "DER SCHLUND DER UNENDLICHEN QUALEN", "IM SOG DER SEELEN"],
     on: "AN", off: "AUS",
+    upd: { available: "UPDATE {v} VERFÜGBAR", title: "UPDATE {v}", install: "INSTALLIEREN", later: "SPÄTER", restart: "NEU STARTEN", loading: "LADE UPDATE {p} %", failed: "UPDATE FEHLGESCHLAGEN. SPÄTER NOCHMAL VERSUCHEN.", done: "AKTUALISIERT AUF {v}. VIEL SPASS!" },
     ingame: {
       resume: "WEITERSPIELEN", quit: "ZUM LAUNCHER", quit_sure: "WIRKLICH? NOCHMAL DRÜCKEN", hint: "ESC ODER SELECT+START: MENÜ",
       keys: ["PFEILTASTEN|BEWEGEN", "X  S  Z  A|X  ○  □  △", "Q  W  E  R|L1  R1  L2  R2", "ENTER|START", "SHIFT RECHTS|SELECT", "ESC|DIESES MENÜ  PAD: SELECT+START", "F7|SPIELSTÄNDE  PAD: SELECT+R1", "F8|ZURÜCKSPULEN  PAD: SELECT+R3", "TAB / F9|VORSPULEN HALTEN / AN-AUS", "F6|ZEILEN AN-AUS", "ALT+ENTER|VOLLBILD", "NUM + / -|LAUTSTÄRKE", "F3 / F4|STATISTIK / TEXTUREN"],
@@ -41,7 +42,7 @@ const STR = {
       general: "ALLGEMEIN", pause: "PAUSE", keys: "TASTEN", video: "BILD", gfx: "GRAFIK", filter: "FILTER", sound: "TON",
     },
     opt: {
-      language: "SPRACHE", volume: "LAUTSTÄRKE", fast_cd: "SCHNELL LADEN",
+      language: "SPRACHE", volume: "LAUTSTÄRKE", fast_cd: "SCHNELL LADEN", updates: "AUTO-UPDATES",
       hd_build: "HD-GRAFIKEN",
       internal_resolution: "AUFLÖSUNG", aspect_ratio: "FORMAT", fullscreen: "ANZEIGE", vsync: "BILDSYNC",
       preset: "STIL", hd_sprites: "HD FIGUREN", hd_levels: "HD LANDSCHAFT", hd_hud: "HD ANZEIGEN",
@@ -80,13 +81,14 @@ const STR = {
              "HYDRA CANYON", "MEDUSA'S LAIR", "CYCLOPS ATTACK", "TITAN FLIGHT",
              "PASSAGEWAYS OF ETERNAL TORMENT", "VORTEX OF SOULS"],
     on: "ON", off: "OFF",
+    upd: { available: "UPDATE {v} AVAILABLE", title: "UPDATE {v}", install: "INSTALL", later: "LATER", restart: "RESTART", loading: "DOWNLOADING {p} %", failed: "UPDATE FAILED. PLEASE TRY AGAIN LATER.", done: "UPDATED TO {v}. HAVE FUN!" },
     ingame: {
       resume: "RESUME", quit: "BACK TO LAUNCHER", quit_sure: "SURE? PRESS AGAIN", hint: "ESC OR SELECT+START: MENU",
       keys: ["ARROW KEYS|MOVE", "X  S  Z  A|X  ○  □  △", "Q  W  E  R|L1  R1  L2  R2", "ENTER|START", "RIGHT SHIFT|SELECT", "ESC|THIS MENU  PAD: SELECT+START", "F7|SAVE STATES  PAD: SELECT+R1", "F8|REWIND  PAD: SELECT+R3", "TAB / F9|FAST FORWARD HOLD / ON-OFF", "F6|SCANLINES ON-OFF", "ALT+ENTER|FULLSCREEN", "NUM + / -|VOLUME", "F3 / F4|STATS / TEXTURES"],
     },
     pages: { general: "GENERAL", pause: "PAUSE", keys: "CONTROLS", video: "DISPLAY", gfx: "GRAPHICS", filter: "FILTERS", sound: "SOUND" },
     opt: {
-      language: "LANGUAGE", volume: "VOLUME", fast_cd: "FAST LOADING",
+      language: "LANGUAGE", volume: "VOLUME", fast_cd: "FAST LOADING", updates: "AUTO UPDATES",
       hd_build: "HD GRAPHICS",
       internal_resolution: "RESOLUTION", aspect_ratio: "ASPECT", fullscreen: "MODE", vsync: "VSYNC",
       preset: "STYLE", hd_sprites: "HD CHARACTERS", hd_levels: "HD SCENERY", hd_hud: "HD DISPLAY",
@@ -125,13 +127,14 @@ const STR = {
              "LE CANYON DE L'HYDRE", "L'ANTRE DE MÉDUSE", "L'ATTAQUE DU CYCLOPE", "LE VOL DES TITANS",
              "LES COULOIRS DU TOURMENT ÉTERNEL", "LE TOURBILLON DES ÂMES"],
     on: "OUI", off: "NON",
+    upd: { available: "MISE À JOUR {v} DISPONIBLE", title: "MISE À JOUR {v}", install: "INSTALLER", later: "PLUS TARD", restart: "REDÉMARRER", loading: "TÉLÉCHARGEMENT {p} %", failed: "ÉCHEC DE LA MISE À JOUR. RÉESSAIE PLUS TARD.", done: "MIS À JOUR EN {v}. AMUSE-TOI BIEN!" },
     ingame: {
       resume: "REPRENDRE", quit: "RETOUR AU LANCEUR", quit_sure: "SÛR? APPUIE ENCORE", hint: "ÉCHAP OU SELECT+START: MENU",
       keys: ["FLÈCHES|SE DÉPLACER", "X  S  Z  A|X  ○  □  △", "Q  W  E  R|L1  R1  L2  R2", "ENTRÉE|START", "MAJ DROITE|SELECT", "ÉCHAP|CE MENU  MANETTE: SELECT+START", "F7|SAUVEGARDES  MANETTE: SELECT+R1", "F8|REMBOBINER  MANETTE: SELECT+R3", "TAB / F9|AVANCE RAPIDE MAINTENIR / ON-OFF", "F6|LIGNES ON-OFF", "ALT+ENTRÉE|PLEIN ÉCRAN", "PAVÉ + / -|VOLUME", "F3 / F4|STATS / TEXTURES"],
     },
     pages: { general: "GÉNÉRAL", pause: "PAUSE", keys: "TOUCHES", video: "AFFICHAGE", gfx: "GRAPHISMES", filter: "FILTRES", sound: "SON" },
     opt: {
-      language: "LANGUE", volume: "VOLUME", fast_cd: "CHARGEMENT RAPIDE",
+      language: "LANGUE", volume: "VOLUME", fast_cd: "CHARGEMENT RAPIDE", updates: "MISES À JOUR",
       hd_build: "GRAPHISMES HD",
       internal_resolution: "RÉSOLUTION", aspect_ratio: "FORMAT", fullscreen: "MODE", vsync: "SYNCHRO",
       preset: "STYLE", hd_sprites: "PERSONNAGES HD", hd_levels: "DÉCORS HD", hd_hud: "INTERFACE HD",
@@ -170,13 +173,14 @@ const STR = {
              "EL CAÑÓN DE LA HIDRA", "LA GUARIDA DE MEDUSA", "EL ATAQUE DEL CÍCLOPE", "EL VUELO DE LOS TITANES",
              "LOS PASILLOS DEL TORMENTO ETERNO", "EL VÓRTICE DE LAS ALMAS"],
     on: "SÍ", off: "NO",
+    upd: { available: "ACTUALIZACIÓN {v} DISPONIBLE", title: "ACTUALIZACIÓN {v}", install: "INSTALAR", later: "MÁS TARDE", restart: "REINICIAR", loading: "DESCARGANDO {p} %", failed: "LA ACTUALIZACIÓN FALLÓ. INTÉNTALO MÁS TARDE.", done: "ACTUALIZADO A {v}. ¡DIVIÉRTETE!" },
     ingame: {
       resume: "CONTINUAR", quit: "VOLVER AL LANZADOR", quit_sure: "¿SEGURO? PULSA OTRA VEZ", hint: "ESC O SELECT+START: MENÚ",
       keys: ["FLECHAS|MOVER", "X  S  Z  A|X  ○  □  △", "Q  W  E  R|L1  R1  L2  R2", "INTRO|START", "MAYÚS DCHA|SELECT", "ESC|ESTE MENÚ  MANDO: SELECT+START", "F7|PARTIDAS  MANDO: SELECT+R1", "F8|REBOBINAR  MANDO: SELECT+R3", "TAB / F9|AVANCE RÁPIDO MANTENER / SÍ-NO", "F6|LÍNEAS SÍ-NO", "ALT+INTRO|PANTALLA COMPLETA", "TECL. NUM + / -|VOLUMEN", "F3 / F4|ESTADÍSTICAS / TEXTURAS"],
     },
     pages: { general: "GENERAL", pause: "PAUSA", keys: "CONTROLES", video: "PANTALLA", gfx: "GRÁFICOS", filter: "FILTROS", sound: "SONIDO" },
     opt: {
-      language: "IDIOMA", volume: "VOLUMEN", fast_cd: "CARGA RÁPIDA",
+      language: "IDIOMA", volume: "VOLUMEN", fast_cd: "CARGA RÁPIDA", updates: "ACTUALIZACIONES",
       hd_build: "GRÁFICOS HD",
       internal_resolution: "RESOLUCIÓN", aspect_ratio: "FORMATO", fullscreen: "MODO", vsync: "SINCRONÍA",
       preset: "ESTILO", hd_sprites: "PERSONAJES HD", hd_levels: "ESCENARIOS HD", hd_hud: "MARCADORES HD",
@@ -215,13 +219,14 @@ const STR = {
              "IL CANYON DELL'IDRA", "IL COVO DI MEDUSA", "L'ATTACCO DEL CICLOPE", "IL VOLO DEI TITANI",
              "I CORRIDOI DEL TORMENTO ETERNO", "IL VORTICE DELLE ANIME"],
     on: "SÌ", off: "NO",
+    upd: { available: "AGGIORNAMENTO {v} DISPONIBILE", title: "AGGIORNAMENTO {v}", install: "INSTALLA", later: "PIÙ TARDI", restart: "RIAVVIA", loading: "SCARICAMENTO {p} %", failed: "AGGIORNAMENTO NON RIUSCITO. RIPROVA PIÙ TARDI.", done: "AGGIORNATO ALLA {v}. BUON DIVERTIMENTO!" },
     ingame: {
       resume: "RIPRENDI", quit: "TORNA AL LAUNCHER", quit_sure: "SICURO? PREMI DI NUOVO", hint: "ESC O SELECT+START: MENU",
       keys: ["FRECCE|MUOVERSI", "X  S  Z  A|X  ○  □  △", "Q  W  E  R|L1  R1  L2  R2", "INVIO|START", "MAIUSC DESTRO|SELECT", "ESC|QUESTO MENU  PAD: SELECT+START", "F7|SALVATAGGI  PAD: SELECT+R1", "F8|RIAVVOLGI  PAD: SELECT+R3", "TAB / F9|AVANTI VELOCE TENERE / ON-OFF", "F6|RIGHE ON-OFF", "ALT+INVIO|SCHERMO INTERO", "TASTIERINO + / -|VOLUME", "F3 / F4|STATISTICHE / TEXTURE"],
     },
     pages: { general: "GENERALE", pause: "PAUSA", keys: "COMANDI", video: "SCHERMO", gfx: "GRAFICA", filter: "FILTRI", sound: "AUDIO" },
     opt: {
-      language: "LINGUA", volume: "VOLUME", fast_cd: "CARICAMENTO RAPIDO",
+      language: "LINGUA", volume: "VOLUME", fast_cd: "CARICAMENTO RAPIDO", updates: "AGGIORNAMENTI",
       hd_build: "GRAFICA HD",
       internal_resolution: "RISOLUZIONE", aspect_ratio: "FORMATO", fullscreen: "MODALITÀ", vsync: "VSYNC",
       preset: "STILE", hd_sprites: "PERSONAGGI HD", hd_levels: "SCENARI HD", hd_hud: "INDICATORI HD",

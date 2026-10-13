@@ -127,6 +127,7 @@ const Setting kSettings[] = {
     {"hd_levels", "b", "true"}, {"hd_hud", "b", "true"}, {"start_level", "s", "off"},
     {"crt_sim", "b", "false"}, {"crt_mask", "f", "0.5"}, {"crt_bloom", "f", "0.35"},
     {"skip_intro", "b", "true"}, {"skip_memcard", "b", "true"}, {"language", "s", ""}, {"fast_cd", "b", "true"},
+    {"updates", "b", "true"},
 };
 const char* const kVideoKeys[] = {"internal_resolution", "window_width", "fullscreen", "aspect_ratio", "vsync",
                                   "texture_filtering", "antialiasing", "crt_filter", "scanlines",
@@ -294,6 +295,76 @@ HdStatus hd_read(const Ctx& c) {
     const std::string eta = field("eta");
     st.eta = eta.empty() ? -1 : std::atol(eta.c_str());
     return st;
+}
+
+// --------------------------------------------------------------- updates
+// update/updater.py (in the shipped Python) asks GitHub for the latest
+// release, downloads and checks it, and swaps the program files after the
+// launcher has quit; the player's files are never in the zip.
+fs::path upd_dir(const Ctx& c) { return c.exe_dir / "update"; }
+
+// A JSON string or literal by key (one level; enough for the updater's files).
+std::string json_field(const std::string& j, const std::string& key) {
+    size_t k = j.find("\"" + key + "\":");
+    if (k == std::string::npos) return "";
+    size_t v = j.find_first_not_of(" ", k + key.size() + 3);
+    if (v == std::string::npos) return "";
+    if (j[v] != '"') {
+        const size_t e = j.find_first_of(",}", v);
+        return trim(j.substr(v, e - v));
+    }
+    std::string out;
+    for (size_t i = v + 1; i < j.size(); ++i) {
+        const char ch = j[i];
+        if (ch == '"') break;
+        if (ch != '\\' || i + 1 >= j.size()) { out += ch; continue; }
+        const char e = j[++i];
+        if (e == 'n') out += '\n';
+        else if (e == 't') out += ' ';
+        else if (e == 'r') {}
+        else if (e == 'u' && i + 4 < j.size()) {
+            unsigned cp = unsigned(std::strtoul(j.substr(i + 1, 4).c_str(), nullptr, 16));
+            i += 4;
+            if (cp >= 0xD800 && cp < 0xDC00 && i + 6 < j.size() && j[i + 1] == '\\' && j[i + 2] == 'u') {
+                const unsigned lo = unsigned(std::strtoul(j.substr(i + 3, 4).c_str(), nullptr, 16));
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                i += 6;
+            }
+            if (cp < 0x80) out += char(cp);
+            else if (cp < 0x800) { out += char(0xC0 | (cp >> 6)); out += char(0x80 | (cp & 63)); }
+            else if (cp < 0x10000) { out += char(0xE0 | (cp >> 12)); out += char(0x80 | ((cp >> 6) & 63)); out += char(0x80 | (cp & 63)); }
+            else { out += char(0xF0 | (cp >> 18)); out += char(0x80 | ((cp >> 12) & 63)); out += char(0x80 | ((cp >> 6) & 63)); out += char(0x80 | (cp & 63)); }
+        } else out += e;
+    }
+    return out;
+}
+
+// Release notes (Markdown) as plain lines for the game's font.
+std::string plain_notes(const std::string& md) {
+    std::string out;
+    std::istringstream in(md);
+    for (std::string line; std::getline(in, line);) {
+        size_t a = line.find_first_not_of("# ");
+        line = a == std::string::npos ? "" : (line[0] == '#' ? line.substr(a) : line);
+        std::string t;
+        for (size_t i = 0; i < line.size(); ++i) {
+            const char ch = line[i];
+            if (ch == '*' || ch == '`') continue;
+            if (ch == '[') {                                   // [text](url) -> text
+                const size_t close = line.find("](", i);
+                const size_t end = close == std::string::npos ? close : line.find(')', close);
+                if (end != std::string::npos) { t += line.substr(i + 1, close - i - 1); i = end; continue; }
+            }
+            t += ch;
+        }
+        for (auto [from, to] : std::initializer_list<std::pair<const char*, const char*>>{
+                 {"\u2192", "->"}, {"\u2026", "..."}, {"\u2013", "-"}, {"\u2014", "-"}, {"\u00d7", "X"},
+                 {"\u2022", "-"}}) {
+            for (size_t q; (q = t.find(from)) != std::string::npos;) t.replace(q, std::strlen(from), to);
+        }
+        out += t + "\n";
+    }
+    return out;
 }
 
 // ------------------------------------------------- settings.toml / mods
@@ -538,6 +609,11 @@ struct App {
     HdStatus hd;
     uint64_t hd_polled = 0;
     bool hd_gave_up = false;            // failed or impossible this session; the next start retries
+    SDL_Process* upd_proc = nullptr;    // updater check / download
+    std::string upd_op, upd_latest, upd_notes, upd_state;   // state: "", ok, download, unpack, ready, failed
+    bool upd_newer = false;
+    double upd_fraction = 0;
+    uint64_t upd_polled = 0;
 
     // ---------------------------------------------------------- drawing
     SDL_Texture* texture(const Image& img) {
@@ -596,37 +672,38 @@ struct App {
         auto it = art.font.glyphs.find(upper(c));
         return it == art.font.glyphs.end() ? art.font.glyphs.at(U' ') : it->second;
     }
-    int text_width(const std::string& s) const {
+    int text_width(const std::string& s, float f = 1) const {
         int w = 0;
         for (char32_t c : utf32(s)) w += glyph(c).second + 1;
-        return std::max(0, w - 1);
+        return int(std::max(0, w - 1) * f + 0.5f);
     }
-    void text(const std::string& s, float x, float y, const char* color = "yellow", const char* align = "left") {
+    void text(const std::string& s, float x, float y, const char* color = "yellow", const char* align = "left",
+              float f = 1) {
         const Image& atlas = std::strcmp(color, "blue") == 0 ? art.font.blue
                            : std::strcmp(color, "orange") == 0 ? art.font.orange : art.font.yellow;
-        const int w = text_width(s);
+        const int w = text_width(s, f);
         float cx = std::strcmp(align, "center") == 0 ? std::round(x - w / 2.0f)
                  : std::strcmp(align, "right") == 0 ? x - w : x;
         SDL_Texture* t = texture(atlas);
         for (char32_t c : utf32(s)) {
             const auto& g = glyph(c);
             SDL_FRect src{float(g.first), 0, float(g.second), float(art.font.height)};
-            SDL_FRect dst{cx * SC, y * SC, float(g.second) * SC, float(art.font.height) * SC};
+            SDL_FRect dst{cx * SC, y * SC, float(g.second) * SC * f, float(art.font.height) * SC * f};
             SDL_RenderTexture(ren, t, &src, &dst);
-            cx += g.second + 1;
+            cx += (g.second + 1) * f;
         }
     }
-    std::vector<std::string> wrap(const std::string& s, int max_w) const {
+    std::vector<std::string> wrap(const std::string& s, int max_w, float f = 1) const {
         std::vector<std::string> lines;
         std::string line, word;
         std::istringstream in(s);
         if (s.find('\n') != std::string::npos) {
-            for (std::string part; std::getline(in, part);) for (auto& l : wrap(part, max_w)) lines.push_back(l);
+            for (std::string part; std::getline(in, part);) for (auto& l : wrap(part, max_w, f)) lines.push_back(l);
             return lines;
         }
-        if (text_width(s) <= max_w) return {s};
+        if (text_width(s, f) <= max_w) return {s};
         while (in >> word) {
-            if (!line.empty() && text_width(line + " " + word) > max_w) { lines.push_back(line); line = word; }
+            if (!line.empty() && text_width(line + " " + word, f) > max_w) { lines.push_back(line); line = word; }
             else line = line.empty() ? word : line + " " + word;
         }
         if (!line.empty()) lines.push_back(line);
@@ -670,6 +747,13 @@ struct App {
     std::string hd_label();
     void hd_toggle();
     void hd_line(float y);
+
+    // ----------------------------------------------------------- updates
+    bool upd_spawn(const std::string& op);
+    void upd_tick();
+    void upd_install();
+    void upd_restart();
+    void upd_line(float y);
 };
 
 // ================================================================ screens
@@ -693,7 +777,14 @@ struct LoadScreen : Screen {
     void key(App& a, Key k) override;
 };
 
+struct UpdateScreen : Screen {
+    int choice = 0, scroll = 0;
+    void render(App& a) override;
+    void key(App& a, Key k) override;
+};
+
 MainMenu g_main;
+UpdateScreen g_update;
 LevelScreen g_levels;
 OptionsScreen g_options;
 LoadScreen g_load;
@@ -718,7 +809,8 @@ void MainMenu::render(App& a) {
         if (a.lang() == "de" && it != a.art.level_name.end()) a.centered(it->second, 6);
         else a.text_block(a.level_name(lv), W / 2.0f, -5, "yellow", 300);
     }
-    a.hd_line(225);
+    if (!a.hd_proc && a.upd_newer) a.upd_line(225);
+    else a.hd_line(225);
 }
 void MainMenu::key(App& a, Key k) {
     if (k == Key::Up) sel = (sel + 3) % 4;
@@ -797,7 +889,7 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
     std::vector<std::pair<std::string, std::string>> langs;
     for (const auto& l : kLangs) langs.push_back({l.code, std::string("=") + l.name});
     return {
-        {"general", {{"language", langs}, {"fast_cd", kOnOff}}},
+        {"general", {{"language", langs}, {"fast_cd", kOnOff}, {"updates", kOnOff}}},
         {"video", {{"internal_resolution", {{"native", "native"}, {"720p", "=720P"}, {"1080p", "=1080P"},
                                             {"1440p", "=1440P"}, {"4k", "=4K"}}},
                    {"aspect_ratio", {{"4:3", "ratio43"}, {"16:9", "ratio169"}}},
@@ -1216,6 +1308,7 @@ void App::run() {
         pad_prev = pk;
         if (quit) break;
         hd_tick();
+        upd_tick();
 
         // draw the stage at 4x, then fit it into the window as 4:3
         hits.clear();
@@ -1240,6 +1333,147 @@ void App::run() {
         SDL_RenderTexture(ren, stage, nullptr, &view);
         SDL_RenderPresent(ren);
         SDL_Delay(15);
+    }
+}
+
+
+// --------------------------------------------------------------- updates
+bool App::upd_spawn(const std::string& op) {
+    const fs::path py = hd_python(ctx), script = upd_dir(ctx) / "updater.py";
+    if (upd_proc || !fs::exists(py) || !fs::exists(script)) return false;
+    const std::string a_py = py.u8string(), a_script = script.u8string(), a_game = ctx.exe_dir.u8string();
+    const char* args[] = {a_py.c_str(), a_script.c_str(), op.c_str(), "--game", a_game.c_str(), nullptr};
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)args);
+    SDL_SetStringProperty(props, SDL_PROP_PROCESS_CREATE_WORKING_DIRECTORY_STRING, a_game.c_str());
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+    upd_proc = SDL_CreateProcessWithProperties(props);
+    SDL_DestroyProperties(props);
+    upd_op = op;
+    return upd_proc != nullptr;
+}
+
+void App::upd_tick() {
+    const uint64_t now = SDL_GetTicks();
+    if (!upd_proc || now - upd_polled < 250) return;
+    upd_polled = now;
+    if (upd_op == "download") {
+        const std::string j = read_text(upd_dir(ctx) / "progress.json");
+        if (!j.empty()) { upd_state = json_field(j, "state"); upd_fraction = std::atof(json_field(j, "fraction").c_str()); }
+    }
+    int code = 0;
+    if (!SDL_WaitProcess(upd_proc, false, &code)) return;
+    SDL_DestroyProcess(upd_proc);
+    upd_proc = nullptr;
+    if (upd_op == "check") {
+        const std::string j = read_text(upd_dir(ctx) / "check.json");
+        if (json_field(j, "state") != "ok") return;               // offline: say nothing
+        upd_newer = json_field(j, "newer") == "true";
+        upd_latest = json_field(j, "latest");
+        upd_notes = plain_notes(json_field(j, "notes"));
+        if (upd_newer && ctx.store.get("update_seen") != upd_latest && screen == &g_main) {
+            g_update.choice = 0;
+            g_update.scroll = 0;
+            go(&g_update);
+        }
+    } else {
+        const std::string j = read_text(upd_dir(ctx) / "progress.json");
+        upd_state = json_field(j, "state");
+        if (upd_state != "ready") upd_state = "failed";
+    }
+}
+
+void App::upd_install() {
+    upd_state = "download";
+    upd_fraction = 0;
+    if (!upd_spawn("download")) upd_state = "failed";
+}
+
+// Hand over to the new version's updater and Python (nothing it replaces is
+// in use), quit; it waits for this process, copies, starts the game again.
+void App::upd_restart() {
+    const fs::path st = upd_dir(ctx) / "staging";
+#ifdef _WIN32
+    fs::path py = st / "overlay_toolchain" / "python" / "pythonw.exe";
+    const std::string pid = std::to_string(GetCurrentProcessId());
+#else
+    fs::path py = st / "overlay_toolchain" / "python" / "bin" / "python3";
+    const std::string pid = std::to_string(getpid());
+#endif
+    fs::path script = st / "update" / "updater.py";
+    if (!fs::exists(py)) py = hd_python(ctx);
+    if (!fs::exists(script)) script = upd_dir(ctx) / "updater.py";
+    const std::string a_py = py.u8string(), a_script = script.u8string(), a_game = ctx.exe_dir.u8string(),
+                      a_exe = ctx.exe.u8string();
+    const char* args[] = {a_py.c_str(), a_script.c_str(), "apply", "--game", a_game.c_str(), "--wait-pid", pid.c_str(),
+                          "--relaunch", a_exe.c_str(), nullptr};
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)args);
+    SDL_SetStringProperty(props, SDL_PROP_PROCESS_CREATE_WORKING_DIRECTORY_STRING, a_game.c_str());
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+    SDL_Process* p = SDL_CreateProcessWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (!p) { upd_state = "failed"; return; }
+    SDL_DestroyProcess(p);                      // keeps running on its own
+    quit = true;
+}
+
+void App::upd_line(float y) {
+    text(T("upd.available", {{"v", upd_latest}}), W / 2.0f, y, "yellow", "center", 0.8f);
+    hit(40, y, 240, 20, [] {}, [this] { g_update.choice = 0; g_update.scroll = 0; go(&g_update); });
+}
+
+void UpdateScreen::render(App& a) {
+    a.draw(a.art.bg["plaster"], 0, 0, W, H);
+    a.text(a.T("upd.title", {{"v", a.upd_latest}}), W / 2.0f, 4, "yellow", "center");
+    const float f = 0.55f, lh = 12.5f;
+    const auto lines = a.wrap(a.upd_notes, 290, f);
+    const int vis = 12;
+    scroll = std::max(0, std::min(scroll, int(lines.size()) - vis));
+    for (int i = 0; i < vis && scroll + i < int(lines.size()); ++i)
+        a.text(lines[size_t(scroll + i)], 15, 32 + i * lh, "yellow", "left", f);
+    if (int(lines.size()) > vis) {
+        if (scroll > 0) a.text("<", 306, 30, "orange", "left", 0.6f);
+        if (scroll + vis < int(lines.size())) a.text(">", 306, 168, "orange", "left", 0.6f);
+    }
+    const std::string& st = a.upd_state;
+    if (st == "download" || st == "unpack") {
+        const int pct = int(a.upd_fraction * 100);
+        a.text(a.T("upd.loading", {{"p", std::to_string(pct)}}), W / 2.0f, 196, "yellow", "center", 0.8f);
+        a.rect(59, 221, 202, 6, {107, 58, 26, 255});
+        a.rect(60, 222, 200, 4, {20, 8, 4, 220});
+        a.rect(60, 222, 200 * float(a.upd_fraction), 4, {255, 208, 56, 255});
+        return;
+    }
+    std::vector<std::string> opts;
+    if (st == "ready") opts = {a.T("upd.restart"), a.T("upd.later")};
+    else opts = {a.T("upd.install"), a.T("upd.later")};
+    if (st == "failed") a.text(a.T("upd.failed"), W / 2.0f, 186, "orange", "center", 0.7f);
+    choice = std::min(choice, int(opts.size()) - 1);
+    for (int i = 0; i < int(opts.size()); ++i) {
+        const float x = i == 0 ? 85 : 235;
+        a.text(opts[size_t(i)], x, 210, i == choice ? "blue" : "orange", "center", 0.8f);
+        a.hit(x - 70, 208, 140, 22, [this, i] { choice = i; }, [this, &a, i] { choice = i; key(a, Key::Ok); });
+    }
+}
+void UpdateScreen::key(App& a, Key k) {
+    const std::string& st = a.upd_state;
+    if (st == "download" || st == "unpack") { if (k == Key::Back) a.back(); return; }
+    if (k == Key::Left || k == Key::Right) choice = 1 - choice;
+    else if (k == Key::Up) scroll = std::max(0, scroll - 3);
+    else if (k == Key::Down) scroll += 3;
+    else if (k == Key::Back || (k == Key::Ok && choice == 1)) {
+        a.set("update_seen", a.upd_latest);
+        a.back();
+    } else if (k == Key::Ok) {
+        if (st == "ready") a.upd_restart();
+        else a.upd_install();
     }
 }
 
@@ -1362,6 +1596,16 @@ int launcher_main(int argc, char** argv) {
     if (pads && npads > 0) app.pad = SDL_OpenGamepad(pads[0]);
     SDL_free(pads);
     app.hd = hd_read(c);
+    {   // just updated: say so once
+        const fs::path applied = upd_dir(c) / "applied.json";
+        const std::string v = json_field(read_text(applied), "version");
+        if (!v.empty()) {
+            app.show_message(app.T("upd.done", {{"v", v}}));
+            std::error_code ec;
+            fs::remove(applied, ec);
+        }
+    }
+    if (c.store.get("updates") != "false") app.upd_spawn("check");
     app.run();
     app.hd_stop();
     for (auto& [img, t] : app.tex) SDL_DestroyTexture(t);
