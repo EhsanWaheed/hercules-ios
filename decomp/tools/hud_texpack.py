@@ -23,6 +23,16 @@ Names: texpage-P4-<xxh3(rect words)>-<xxh3(16 CLUT words)>-64x256-x-y-wxh-P0-15
     # 2. upscale (IllustrationJaNai DAT2, chaiNNer's Python) + palettize, write
     ~/psx-decomp/.venv/bin/python tools/hud_texpack.py build PACK_DIR
 
+Without a running game: the whole HUD strip ships on the disc. STP/STP1
+(ENGINE1 levels) and STP/STP2 (ENGINE3 levels 2, 8, 10) are the 64x512-word
+VRAM column at x 320: rows 0..95 are the HUD page (rows 56..79 are the two
+slots the game fills at run time), the palettes sit at (352, 32..39), and
+every medallion / weapon frame is a 24x24 cell of the grid from row 80,
+x every 6 words (checked against all captures). `from-disc` writes one
+capture per STP file with every non-empty grid cell as a slot frame:
+
+    python3 tools/hud_texpack.py from-disc FILES_DIR [--work DIR]
+
 Work files: assets/hud/ (captures/, orig/, raw/, pack/).
 """
 import argparse
@@ -133,6 +143,26 @@ def in_slot(x, y, w, h):
     return any(x < sx + sw and sx < x + w and y < sy + sh and sy < y + h for sx, sy, sw, sh in SLOTS)
 
 
+STP_GRID = (80, 24, 6)          # first row, cell height, cell width (words)
+
+
+def from_disc(args):
+    out = Path(args.work) / "captures"
+    out.mkdir(parents=True, exist_ok=True)
+    for name in ("STP1", "STP2"):
+        stp = np.frombuffer((Path(args.files) / "STP" / f"{name}.").read_bytes(), "<u2").reshape(512, 64)
+        y0, ch, cw = STP_GRID
+        cells = [stp[y:y + ch, x:x + cw] for y in range(y0, 512 - ch + 1, ch)
+                 for x in range(0, 64 - cw + 1, cw)]
+        cells = [c for c in cells if c.any()]
+        caps = {"page": stp[:ROWS].copy(), "clut_rows": stp[32:40, 32:48].copy()}
+        for k, (x, y) in CLUTS.items():
+            caps[f"clut_{k}"] = stp[y - PAGE_Y, x - PAGE_X:x - PAGE_X + 16].copy()
+        frames = np.stack(cells)
+        np.savez(out / f"{name}.npz", **caps, slot0=frames, slot1=frames)
+        print(f"{out / name}.npz: {len(cells)} slot frames")
+
+
 def captures():
     paths = sorted((WORK / "captures").glob("*.npz"))
     if (WORK / "capture.npz").exists():
@@ -172,8 +202,10 @@ def build(args):
         if not p.exists():
             Image.fromarray(rgba(indices(words), clut), "RGBA").save(p)
     print(f"{len(todo)} HUD images to upscale")
-    subprocess.run([str(MODEL_PY), str(HERE / "upscale_model.py"), str(args.model), str(orig), str(raw)],
-                   check=True)
+    cmd = [str(args.python), str(HERE / "upscale_model.py"), str(args.model), str(orig), str(raw)]
+    if args.progress:
+        cmd += ["--progress", str(args.progress)]
+    subprocess.run(cmd, check=True)
     dst = Path(args.pack) / "replacements" / "hud"
     out = WORK / "pack"
     if out.exists():
@@ -222,8 +254,16 @@ def main():
     b = sub.add_parser("build", help="upscale and write texpage replacements")
     b.add_argument("pack", help="texture pack folder (with replacements/)")
     b.add_argument("--model", type=Path, default=MODEL, help="spandrel model (default DAT2)")
+    b.add_argument("--python", type=Path, default=MODEL_PY, help="Python with torch + spandrel")
+    b.add_argument("--work", type=Path, help=f"work folder (default {WORK})")
+    b.add_argument("--progress", type=Path, help="JSON progress file for the upscale step")
+    d = sub.add_parser("from-disc", help="captures from STP/STP1 and STP2 of the extracted disc")
+    d.add_argument("files", help="extracted disc files (with STP/)")
+    d.add_argument("--work", type=Path, default=WORK)
     args = ap.parse_args()
-    {"capture": capture, "build": build}[args.cmd](args)
+    if getattr(args, "work", None):
+        globals()["WORK"] = Path(args.work)
+    {"capture": capture, "build": build, "from-disc": from_disc}[args.cmd](args)
 
 
 if __name__ == "__main__":

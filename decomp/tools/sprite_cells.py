@@ -24,6 +24,7 @@ name with assets/sprites/*/*/meta.json.
 import argparse
 import hashlib
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -34,7 +35,9 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sprites import decode_frame, palettes, parse_file  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
+# HERC_ROOT: a work tree with the same layout (files/, assets/sprites/), used
+# by hd_pack_build.py; default the decomp project itself.
+ROOT = Path(os.environ.get("HERC_ROOT") or Path(__file__).resolve().parent.parent)
 ORIG = ROOT / "assets/sprites"
 
 
@@ -109,7 +112,10 @@ def c_h(block):
 def verify_blocks():
     """Cut the original frames at 1x; every drawn pixel must equal palette[index]."""
     blocks = bad = 0
-    for meta_path in sorted(ORIG.glob("*/*/meta.json")):
+    def picked(m):
+        rel = m.parent.relative_to(ORIG).as_posix()
+        return rel not in args.skip and (not args.only or rel in args.only)
+    for meta_path in [m for m in sorted(ORIG.glob("*/*/meta.json")) if picked(m)]:
         for key, img, info in cut_sprite(meta_path, ORIG, 1, verify=True):
             exp = info["expect"]
             for u, v, dw, dh in info.get("drawn", []):
@@ -132,6 +138,8 @@ def main():
     ap.add_argument("out", type=Path, nargs="?")
     ap.add_argument("--scale", type=int, default=4)
     ap.add_argument("--verify", action="store_true")
+    ap.add_argument("--skip", action="append", default=[], help="sprite to leave out (e.g. SD3/S3_1)")
+    ap.add_argument("--only", action="append", default=[], help="cut only these sprites")
     args = ap.parse_args()
     if args.verify:
         sys.exit(0 if verify_blocks() else 1)
@@ -139,7 +147,10 @@ def main():
         ap.error("FRAMES_DIR and OUT_DIR are required")
 
     manifest, written, dupes = {}, 0, 0
-    for meta_path in sorted(ORIG.glob("*/*/meta.json")):
+    def picked(m):
+        rel = m.parent.relative_to(ORIG).as_posix()
+        return rel not in args.skip and (not args.only or rel in args.only)
+    for meta_path in [m for m in sorted(ORIG.glob("*/*/meta.json")) if picked(m)]:
         for key, img, info in cut_sprite(meta_path, args.frames, args.scale):
             if key in manifest:
                 # Same upload drawn in another frame: keep the first cut.

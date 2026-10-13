@@ -37,7 +37,9 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from level_vram import build_vram  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
+# HERC_ROOT: a work tree with the same layout (files/, assets/sprites/), used
+# by hd_pack_build.py; default the decomp project itself.
+ROOT = Path(os.environ.get("HERC_ROOT") or Path(__file__).resolve().parent.parent)
 BLOCK_X, BLOCK_W, BLOCK_H = 384, 384, 512
 CLUT_X, CLUT_Y = 768, 480
 SHADES = range(1, 30)       # clamp(depth >> 5, 1, 29)

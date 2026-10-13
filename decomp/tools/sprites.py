@@ -8,11 +8,14 @@ Reimplements ENGINE1 func_8003FF1C (decompressor) and the cell handling of
 func_8003F9D4; see docs/sprite_format.md for the format.
 """
 import json
+import os
 import struct
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# HERC_ROOT: a work tree with the same layout (files/, assets/sprites/), used
+# by hd_pack_build.py; default the decomp project itself.
+ROOT = Path(os.environ.get("HERC_ROOT") or Path(__file__).resolve().parent.parent)
 ENGINE1 = ROOT / "files/EX/ENGINE1."
 ENGINE1_BASE = 0x80038350
 DIST_TABLE = 0x8006AB3B        # D_8006AB3B: back-reference distances
