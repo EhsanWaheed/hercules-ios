@@ -239,7 +239,16 @@ def disc_path(build):
         disc = read_toml(build / "game.toml").get("disc")
     except (OSError, ValueError):
         disc = None
-    return Path(disc) if disc else None
+    if not disc:
+        return None
+    p = Path(disc)
+    if p.is_absolute():
+        return p
+    # relative like the runtime: from the exe folder, walking up to the game folder
+    for base in (build, *build.parents):
+        if (base / p).exists():
+            return base / p
+    return ROOT / p
 
 
 def hd_running(paths):

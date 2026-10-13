@@ -6,6 +6,7 @@ name = "Hercules"
 id = "SCES-00893"
 players = 1
 exe = "disc/SCES_008.93"
+# relative to the game folder: put your Redump dump (cue + bin) into disc/
 disc = "disc/Disneys Hercules Action-Spiel (Germany).cue"
 load_address = "0x80010000"
 entry_pc = "0x80013710"

@@ -31,12 +31,55 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-HERC = Path.home() / "psx-decomp/hercules"
+PORT = Path(__file__).resolve().parent.parent
+
+
+def find_decomp():
+    """The decomp checkout: $HERC_DECOMP, ../decomp (combined repo) or ~/psx-decomp/hercules."""
+    import os
+    for d in (os.environ.get("HERC_DECOMP"), PORT.parent / "decomp", Path.home() / "psx-decomp/hercules"):
+        if d and (Path(d) / "tools/sprites.py").exists():
+            return Path(d)
+    sys.exit("decomp tools not found (set HERC_DECOMP)")
+
+
+HERC = find_decomp()
 IMAGES = HERC / "assets/images"
 SPRITES = HERC / "assets/sprites"
-SPRITES_HD = HERC / "assets/sprites_hd/DAT2-schutz"
+# HD title sprites: our hand-made set, else the one the HD pack build made from the disc
+HD_WORK = Path.home() / ".local/share/hercules-recompiled/hd-work/assets/sprites_hd/final"
+SPRITES_HD = next((d for d in (HERC / "assets/sprites_hd/DAT2-schutz", HD_WORK) if (d / "SD4").is_dir()),
+                  HERC / "assets/sprites_hd/DAT2-schutz")
 IMAGES_HD = HERC / "assets/images_hd/DAT2"
 OUT = Path(__file__).resolve().parent / "web/assets"
+
+
+def disc_cue():
+    """The disc named in the port's game.toml (relative paths: from the port folder)."""
+    import tomllib
+    disc = tomllib.loads((PORT / "game.toml").read_text())["game"]["disc"]
+    p = Path(disc)
+    return p if p.is_absolute() else PORT / p
+
+
+def prepare():
+    """Make the inputs this script reads from the player's disc when they are missing:
+    extracted files, full-screen pictures, title sprites, HUD strip (font)."""
+    py, tools = sys.executable, HERC / "tools"
+    if not (HERC / "files/EX/TITLE.").exists():
+        print("extracting the disc ...", flush=True)
+        subprocess.run([py, tools / "iso_extract.py", disc_cue(), HERC / "files"], check=True)
+    if not (IMAGES / "TI_TME_0.png").exists():
+        subprocess.run([py, tools / "fullscreen2png.py", IMAGES,
+                        *sorted(str(p) for p in (HERC / "files/TI").iterdir())], check=True)
+    if not (SPRITES / "SD4").is_dir():
+        src = sorted(p.relative_to(HERC).as_posix() for p in (HERC / "files/SD4").glob("S*"))
+        subprocess.run([py, tools / "sprites.py", "dump", "assets/sprites", *src], cwd=HERC, check=True)
+    if not list((HERC / "assets/hud/captures").glob("*.npz")):
+        if not (tools / "native/libxxh3.so").exists():
+            subprocess.run(["make", "tools/native/libxxh3.so"], cwd=HERC, check=True)
+        subprocess.run([py, tools / "hud_texpack.py", "from-disc", HERC / "files",
+                        "--work", HERC / "assets/hud"], check=True)
 MODEL = Path.home() / "psx-decomp/models/IllustrationJaNai/4x_IllustrationJaNai_V1_DAT2_190k.pth"
 MODEL_PY = Path.home() / ".config/chaiNNer/python/python/bin/python3.11"
 SCALE = 4
@@ -158,7 +201,7 @@ def font(manifest):
     """Pause-menu font from the HUD page (4-bit, palettes at (352,32..39))."""
     sys.path.insert(0, str(HERC / "tools"))
     import hud_texpack as hud
-    caps = sorted((HERC / "assets/hud/captures").glob("L*.npz"))
+    caps = sorted((HERC / "assets/hud/captures").glob("*.npz"))
     cap = next(np.load(c) for c in caps if "clut_rows" in np.load(c))
     idx = hud.indices(cap["page"])
     pal = cap["clut_rows"]
@@ -408,8 +451,7 @@ def font(manifest):
 
 
 def main():
-    if not IMAGES.exists() or not SPRITES.exists():
-        sys.exit(f"missing game assets in {HERC / 'assets'} (run the decomp extract tools first)")
+    prepare()
     if OUT.exists():
         shutil.rmtree(OUT)
     manifest = {"scale": SCALE}
