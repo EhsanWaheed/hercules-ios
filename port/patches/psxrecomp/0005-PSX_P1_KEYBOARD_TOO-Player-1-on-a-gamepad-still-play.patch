@@ -1,0 +1,55 @@
+From 30fa766824538653758fec3e9da1191884c9ec4c Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 18:46:23 +0200
+Subject: [PATCH] PSX_P1_KEYBOARD_TOO: Player 1 on a gamepad still plays from
+ the keyboard
+
+Release builds default Player 1 to the keyboard and rely on a launcher to
+assign the pad. A title launcher that assigns "auto" (first pad) would leave
+keyboard-only players without input while no pad is plugged in; with
+PSX_P1_KEYBOARD_TOO=1 the keyboard mapping is merged into Player 1's pad.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/main.cpp | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 9c7a994..72129c8 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -5563,12 +5563,18 @@ static void axes_to_pad_pair(int16_t vx, int16_t vy, uint8_t* obx, uint8_t* oby,
+ 
+ /* Buttons for a player's selected device (0xFFFF = none pressed). `player` is
+  * 1..5 — selects which keybinds.ini section drives a keyboard port. */
++static int g_p1_keyboard_too = 0;   /* PSX_P1_KEYBOARD_TOO=1 */
+ static uint16_t pad_buttons_for(const PlayerInput& p, int player, bool suppress_stick_axes) {
+     if (p.kind == 1) return pad_from_keyboard(player);
+-    if (p.kind == 2)
+-        return controller_pad_buttons(controller_map_for(p), p.handle,
+-                                      suppress_stick_axes, p.deadzone,
+-                                      player == 1 ? g_p1_claimed_buttons : 0u);
++    if (p.kind == 2) {
++        uint16_t b = controller_pad_buttons(controller_map_for(p), p.handle,
++                                            suppress_stick_axes, p.deadzone,
++                                            player == 1 ? g_p1_claimed_buttons : 0u);
++        /* PSX_P1_KEYBOARD_TOO: Player 1 on a pad still plays from the
++         * keyboard (and only from it while no pad is plugged in). */
++        if (player == 1 && g_p1_keyboard_too) b &= pad_from_keyboard(1);
++        return b;
++    }
+     return 0xFFFF;
+ }
+ 
+@@ -19019,6 +19025,8 @@ session_reboot:
+         if (const char* b = std::getenv("PSX_CRT_BLOOM")) bloom = (float)atof(b);
+         gl_renderer_set_crt(*e && *e != '0', mask, bloom);
+     }
++    if (const char* e = std::getenv("PSX_P1_KEYBOARD_TOO"))
++        g_p1_keyboard_too = (*e && *e != '0') ? 1 : 0;
+     /* PSX_VOLUME=0..100: the host volume a title's launcher remembered. */
+     if (const char* e = std::getenv("PSX_VOLUME")) {
+         if (*e) host_volume_set(atoi(e));
+-- 
+2.56.0
+
