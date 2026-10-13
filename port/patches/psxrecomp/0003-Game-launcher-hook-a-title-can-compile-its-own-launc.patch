@@ -1,0 +1,82 @@
+From 866fa30268340d5577e24b218396eb95a413d6f7 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 12:58:43 +0200
+Subject: [PATCH] Game launcher hook: a title can compile its own launcher into
+ the exe
+
+psx_game_launcher_register(fn): main() calls fn right after parsing the
+command line, before any disc, BIOS or window setup, unless the run asked
+for no launcher (--no-launcher, PSX_NO_LAUNCHER, --headless*). Its return
+value is the exit code; the launcher then runs the exe again with
+--no-launcher for the game.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/psx_game_launcher.h | 19 +++++++++++++++++++
+ runtime/src/main.cpp                | 10 ++++++++++
+ 2 files changed, 29 insertions(+)
+ create mode 100644 runtime/include/psx_game_launcher.h
+
+diff --git a/runtime/include/psx_game_launcher.h b/runtime/include/psx_game_launcher.h
+new file mode 100644
+index 0000000..0c99968
+--- /dev/null
++++ b/runtime/include/psx_game_launcher.h
+@@ -0,0 +1,19 @@
++#ifndef PSX_GAME_LAUNCHER_H
++#define PSX_GAME_LAUNCHER_H
++/* A game's own launcher, compiled into the game executable.
++ *
++ * A title registers one function (usually from a static constructor). When it
++ * is set, main() calls it right after parsing the command line, before any
++ * disc, BIOS or window setup, unless the run asked for no launcher
++ * (--no-launcher, PSX_NO_LAUNCHER, --headless*). Its return value becomes the
++ * process exit code. The usual pattern: show a menu, write settings, then run
++ * this same executable again with --no-launcher for the actual game. */
++#ifdef __cplusplus
++extern "C" {
++#endif
++typedef int (*PsxGameLauncherFn)(int argc, char** argv);
++void psx_game_launcher_register(PsxGameLauncherFn fn);
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 81904fa..2a78d2a 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -124,6 +124,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
+ #include "disc_identity.h"
+ #include "sbi_setup.h"
+ #include "disc_path.h"
++#include "psx_game_launcher.h" /* title-provided launcher hook */
+ #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
+ #include "psx_keybinds.h"    /* configurable keyboard->DualShock keybinds (keybinds.ini) */
+ #include "psx_window_icon.h"
+@@ -15907,6 +15908,9 @@ static uint32_t gcs_gate_read_ram(uint32_t phys, uint32_t size) {
+     return v;
+ }
+ 
++static PsxGameLauncherFn g_game_launcher = nullptr;
++extern "C" void psx_game_launcher_register(PsxGameLauncherFn fn) { g_game_launcher = fn; }
++
+ int main(int argc, char** argv) {
+     /* Force line-buffered output so messages appear even if killed. */
+     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+@@ -16116,6 +16120,12 @@ int main(int argc, char** argv) {
+             force_no_launcher = true;
+         }
+     }
++    /* A launcher compiled into the title (psx_game_launcher.h) runs first. */
++    if (g_game_launcher && !force_no_launcher && !g_headless) {
++        const char* env = std::getenv("PSX_NO_LAUNCHER");
++        if (!env || !env[0] || env[0] == '0')
++            return g_game_launcher(argc, argv);
++    }
+ 
+     std::string default_game_config_storage;
+     if (!game_config_path) {
+-- 
+2.56.0
+
