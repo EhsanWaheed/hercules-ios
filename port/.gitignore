@@ -93,3 +93,11 @@ starvation_dump.jsonl
 
 # game art, made locally (never commit)
 /launcher/icon.png
+
+# Windows cross build (scripts/build_windows.sh) and its logs
+/build-win/
+/build-recompiler-win/
+/build-win.*.log
+/recompiler-win.log
+/package-win.log
+/dist/
