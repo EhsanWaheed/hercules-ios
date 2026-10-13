@@ -28,6 +28,7 @@ const bridge = (() => {
            antialiasing: false, perspective_texturing: false, geometry_correction: false,
            crt_sim: false, crt_mask: 0.5, crt_bloom: 0.35, scanlines: false, scanline_strength: 0.35,
            crt_filter: "raw", frequency: 48000, spu_hq: true, auto_skip_fmv: false, rewind: true,
+           skip_intro: true, skip_memcard: true,
            language: (navigator.language || "de").slice(0, 2) },
     states: [{ slot: 2, name: "", mtime: 1791830880, thumb: "" },
              { slot: 1, name: "LEVEL 2 ANFANG", mtime: 1791830820, thumb: "" }],
@@ -281,7 +282,11 @@ const levelScreen = {
 const onoff = [[true, "on"], [false, "off"]];
 const pct = vs => vs.map(v => [v, "=" + Math.round(v * 100)]);
 const PAGES = [
-  ["lang", [["language", LANGS.map(([k, n]) => [k, "=" + n])]]],
+  ["general", [
+    ["language", LANGS.map(([k, n]) => [k, "=" + n])],
+    ["skip_intro", [[false, "show"], [true, "skip"]]],
+    ["skip_memcard", [[false, "show"], [true, "skip"]]],
+  ]],
   ["video", [
     ["internal_resolution", [["native", "native"], ["720p", "=720P"], ["1080p", "=1080P"], ["1440p", "=1440P"], ["4k", "=4K"]]],
     ["aspect_ratio", [["4:3", "ratio43"], ["16:9", "ratio169"]]],

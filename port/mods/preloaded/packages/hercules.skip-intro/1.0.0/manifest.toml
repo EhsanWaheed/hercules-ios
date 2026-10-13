@@ -1,0 +1,33 @@
+format_version = 5
+id = "hercules.skip-intro"
+version = "1.0.0"
+name = "Skip Intro"
+author = "hercules decomp"
+description = "Goes straight from boot to the LADEN screen and the title menu: skips the piracy notice, the SCEE screen, the three intro movies and, optionally, the memory card check."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SCES-00893"
+
+[[feature]]
+id = "skip-intro"
+name = "Skip intro screens"
+description = "Skips the piracy notice, SCEE screen and intro movies on a cold boot."
+group = "Gameplay"
+default_enabled = false
+
+[[feature]]
+id = "skip-memcard"
+name = "Skip memory card check"
+description = "Skips the 'Bitte warten ... die Memory Card wird überprüft' screen."
+group = "Gameplay"
+default_enabled = false
+
+[[plugin]]
+feature = "skip-intro"
+id = "hercules.skip-intro"
+
+[[plugin]]
+feature = "skip-memcard"
+id = "hercules.skip-memcard"

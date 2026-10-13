@@ -45,6 +45,7 @@ HD_PACKAGE, HD_FEATURE = "hercules.hd-sprites", "hd-sprites"
 GENERIC_PACKAGE, GENERIC_FEATURE = "psx.enhancement.hd-textures", "hd-textures"
 LEVEL_PACKAGE, LEVEL_FEATURE = "hercules.level-select", "level-select"
 WIDE_PACKAGE, WIDE_FEATURE = "hercules.widescreen", "widescreen"
+SKIP_PACKAGE = "hercules.skip-intro"     # features skip-intro, skip-memcard
 
 # (value written to settings.toml, label)
 RESOLUTIONS = [("native", "Original (320×240)"), ("720p", "720p"), ("1080p", "1080p"),
@@ -77,6 +78,7 @@ DEFAULTS = {
     "frequency": 48000, "spu_hq": True, "hd_sprites": True, "hd_levels": True,
     "hd_hud": True, "start_level": "off",
     "crt_sim": False, "crt_mask": 0.5, "crt_bloom": 0.35,
+    "skip_intro": True, "skip_memcard": True,   # boot straight to LADEN / title menu
     "language": None,          # launcher texts; None = from the system locale (de, en, fr, es, it)
 }
 LANGUAGES = ("de", "en", "fr", "es", "it")
@@ -267,12 +269,12 @@ def build_variant(build, parts):
     os.replace(tmp, variant)
 
 
-def write_mod_state(build, pack, start_level="off", widescreen=None):
+def write_mod_state(build, pack, start_level="off", widescreen=None, cfg=None):
     path = build / "mods" / "state.toml"
     doc = read_toml(path) or {"format_version": 2}
     pkgs = doc.setdefault("package", [])
     feats = doc.setdefault("feature", [])
-    for pid in (HD_PACKAGE, GENERIC_PACKAGE, LEVEL_PACKAGE, WIDE_PACKAGE):
+    for pid in (HD_PACKAGE, GENERIC_PACKAGE, LEVEL_PACKAGE, WIDE_PACKAGE, SKIP_PACKAGE):
         if not any(p.get("id") == pid for p in pkgs):
             pkgs.append({"id": pid})
 
@@ -295,6 +297,9 @@ def write_mod_state(build, pack, start_level="off", widescreen=None):
     lv["values"] = {"level": start_level}
     if widescreen is not None:     # PSX titles widen only through a mod
         feature(WIDE_PACKAGE, WIDE_FEATURE)["enabled"] = bool(widescreen)
+    if cfg is not None:
+        feature(SKIP_PACKAGE, "skip-intro")["enabled"] = bool(cfg.get("skip_intro"))
+        feature(SKIP_PACKAGE, "skip-memcard")["enabled"] = bool(cfg.get("skip_memcard"))
     write_atomic(path, toml_dumps(doc))
 
 
@@ -827,7 +832,7 @@ class Launcher(Adw.Application):
         write_settings(self.build, self.cfg)
         write_mod_state(self.build, pack,
                         self.cfg["start_level"] if self.selected_slot is None else "off",
-                        widescreen=self.cfg["aspect_ratio"] == "16:9")
+                        widescreen=self.cfg["aspect_ratio"] == "16:9", cfg=self.cfg)
 
         env = game_env(self.cfg, self.selected_slot)
         log = open(self.build / "launcher_last_run.log", "w")
@@ -1005,7 +1010,7 @@ class WebLauncher(Gtk.Application):
             pack = None
         write_settings(self.build, self.cfg)
         write_mod_state(self.build, pack, self.cfg["start_level"] if slot is None else "off",
-                        widescreen=self.cfg["aspect_ratio"] == "16:9")
+                        widescreen=self.cfg["aspect_ratio"] == "16:9", cfg=self.cfg)
         log = open(self.build / "launcher_last_run.log", "w")
         try:
             self.game = subprocess.Popen([str(self.exe), "--no-launcher"], cwd=self.build,
