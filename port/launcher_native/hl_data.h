@@ -1,0 +1,65 @@
+// Hercules launcher: everything it shows, read from the player's own disc.
+//
+// C++ port of the decomp tools the Python launcher used (iso_extract.py,
+// fullscreen2png.py, sprites.py, build_assets.py font()): nothing of the game
+// ships with the executable; the art is decoded at start-up from the disc.
+#pragma once
+
+#include <cstdint>
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace hl {
+
+struct Image {
+    int w = 0, h = 0;
+    std::vector<uint8_t> rgba;          // w*h*4, straight alpha
+    bool empty() const { return w <= 0 || h <= 0; }
+    uint8_t* at(int x, int y) { return &rgba[(size_t(y) * w + x) * 4]; }
+    const uint8_t* at(int x, int y) const { return &rgba[(size_t(y) * w + x) * 4]; }
+    static Image make(int w, int h) { Image i; i.w = w; i.h = h; i.rgba.assign(size_t(w) * h * 4, 0); return i; }
+    Image crop(int x0, int y0, int x1, int y1) const;
+    Image crop_alpha() const;           // to the opaque bounding box
+};
+
+// ISO 9660 on a MODE2/2352 BIN (from its CUE) or a 2048-byte ISO.
+class Disc {
+public:
+    bool open(const std::filesystem::path& cue_or_bin, std::string* error);
+    // "EX/TITLE." style path (as on the disc, without ";1"); Form 1 data
+    bool read(const std::string& path, std::vector<uint8_t>& out) const;
+    std::vector<std::string> list(const std::string& dir) const;   // file names in a folder
+private:
+    struct Entry { uint32_t lba, size; };
+    bool sector(uint32_t lba, uint8_t* out2048) const;
+    void walk(uint32_t lba, uint32_t size, const std::string& prefix, int depth);
+    std::shared_ptr<std::FILE> f_;
+    int sector_size_ = 2352, data_offset_ = 24;
+    std::map<std::string, Entry> files_;
+};
+
+// Full-screen pictures (TI/, CR/): 18-byte header + 15-bit pixels, several per file.
+std::vector<Image> decode_fullscreen(const std::vector<uint8_t>& blob);
+
+// A sprite file (SD*/S*.N, tag i1.4): the unique frames in the order the
+// decomp's sprites.py writes them (frame number -> image).
+struct SpriteFrames {
+    std::map<int, Image> frames;        // key: 1-based frame number (fNNNN)
+    std::vector<int> order() const;     // sorted frame numbers
+};
+bool decode_sprites(const std::vector<uint8_t>& data, const std::vector<uint8_t>& engine1,
+                    SpriteFrames& out, std::string* error);
+
+// The pause-menu font from the HUD strip (STP/STP1): glyph atlases in the
+// game's yellow and orange plus a blue recolour, one row of glyphs.
+struct Font {
+    int height = 0, baseline = 0;
+    std::map<char32_t, std::pair<int, int>> glyphs;   // char -> (x, width) in the atlas
+    Image yellow, orange, blue;
+};
+bool build_font(const std::vector<uint8_t>& stp, Font& out, std::string* error);
+
+}  // namespace hl

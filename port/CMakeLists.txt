@@ -76,3 +76,12 @@ target_sources(psx-runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_level_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_skip_intro.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_widescreen.c")
+
+# The launcher, compiled into the game executable (psx_game_launcher.h): a
+# menu in the style of the 1997 title screens, its art decoded from the
+# player's disc at start-up. --no-launcher (and the launcher's own relaunch)
+# skips it.
+target_sources(psx-runtime PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native/hl_data.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native/hl_launcher.cpp")
+target_include_directories(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native")
