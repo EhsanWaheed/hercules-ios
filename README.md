@@ -40,8 +40,21 @@ Checksums and release notes: [latest release](https://github.com/obaidr1/hercule
 Windows shows a SmartScreen warning because the program is not signed:
 click **More info → Run anyway**.
 
-The downloads play in original resolution (with widescreen, CRT simulation
-and save states). HD graphics need the source build below for now.
+**HD graphics are made on your PC, from your disc.** After your first game
+the launcher starts building them in the background, at low priority:
+about 4 hours on a laptop CPU, while you play in the original graphics.
+The progress shows on the main menu and under *Options → Graphics → HD
+graphics* (select it to pause or resume). It stops when you close the
+launcher and continues on the next start; once done, HD is switched on.
+For this it downloads, once, about 400 MB from the official sources, each
+checked against a fixed SHA-256: a portable Python
+([python-build-standalone](https://github.com/astral-sh/python-build-standalone)),
+PyTorch (CPU), [spandrel](https://github.com/chaiNNer-org/spandrel) and
+chaiNNer's image helpers, and the upscaling models from their authors'
+releases ([IllustrationJaNai](https://github.com/the-database/MangaJaNai),
+CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
+6 GB of free disk space while it runs; afterwards only the finished pack
+(in `mods/texture-packs/`) stays next to the program.
 
 ## Layout
 
