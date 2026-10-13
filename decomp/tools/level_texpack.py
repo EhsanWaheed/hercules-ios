@@ -23,7 +23,6 @@ and the upscaled detail in between is kept.
 Writes PACK_DIR/replacements/levels/<level>/<name>.png.
 """
 import argparse
-import ctypes
 import json
 import multiprocessing
 import os
@@ -44,13 +43,7 @@ BLOCK_X, BLOCK_W, BLOCK_H = 384, 384, 512
 CLUT_X, CLUT_Y = 768, 480
 SHADES = range(1, 30)       # clamp(depth >> 5, 1, 29)
 
-_lib = ctypes.CDLL(str(Path(__file__).resolve().parent / "native/libxxh3.so"))
-_lib.xxh3_64.restype = ctypes.c_ulonglong
-_lib.xxh3_64.argtypes = (ctypes.c_char_p, ctypes.c_ulong)
-
-
-def xxh3(data):
-    return _lib.xxh3_64(data, len(data))
+from xxh3 import xxh3  # noqa: E402
 
 
 def rgb(words):

@@ -31,6 +31,7 @@ chaiNNer alpha fill), e.g. chaiNNer's bundled one. Plain steps run in the
 Python that runs this script (numpy, Pillow).
 """
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -78,8 +79,11 @@ class Progress:
                 "total": self.total, "fraction": round(f, 4), "elapsed": int(el),
                 "eta": int(eta) if eta is not None else None, "state": self.state}
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data))
-        tmp.replace(self.path)
+        try:
+            tmp.write_text(json.dumps(data))
+            tmp.replace(self.path)
+        except OSError:         # Windows: a reader has it open; next write wins
+            pass
 
     def begin(self, step):
         self.index = [s for s, _ in STEPS].index(step) + 1
@@ -114,9 +118,12 @@ def main():
     ap.add_argument("disc", type=Path, help=".cue (or .bin) of the game")
     ap.add_argument("work", type=Path)
     ap.add_argument("--install", type=Path, help="texture pack folder to (re)place")
-    ap.add_argument("--models", type=Path, default=Path.home() / "psx-decomp/models")
+    ap.add_argument("--models", type=Path,
+                    default=Path(os.environ.get("HERC_MODELS") or Path.home() / "psx-decomp/models"))
+    # this Python when it has torch (the launcher's HD build), else chaiNNer's
     ap.add_argument("--ml-python", type=Path,
-                    default=Path.home() / ".config/chaiNNer/python/python/bin/python3.11")
+                    default=Path(sys.executable) if importlib.util.find_spec("torch")
+                    else Path.home() / ".config/chaiNNer/python/python/bin/python3.11")
     ap.add_argument("--progress", type=Path)
     a = ap.parse_args()
 
@@ -172,7 +179,7 @@ def main():
 
         pack = W / "pack"
         prog.begin("upscale-hud")
-        if not (xxh := HERE / "native/libxxh3.so").exists():
+        if not importlib.util.find_spec("xxhash") and not (xxh := HERE / "native/libxxh3.so").exists():
             run(["make", xxh.relative_to(DECOMP)], cwd=DECOMP)
         hud_pack = W / "pack-hud"
         run([py, HERE / "hud_texpack.py", "build", hud_pack, "--work", A / "hud", "--python", a.ml_python,

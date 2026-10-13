@@ -36,7 +36,6 @@ capture per STP file with every non-empty grid cell as a slot frame:
 Work files: assets/hud/ (captures/, orig/, raw/, pack/).
 """
 import argparse
-import ctypes
 import subprocess
 import sys
 import time
@@ -59,13 +58,7 @@ SLOT_CLUTS = ("medal",)
 MODEL = Path.home() / "psx-decomp/models/IllustrationJaNai/4x_IllustrationJaNai_V1_DAT2_190k.pth"
 MODEL_PY = Path.home() / ".config/chaiNNer/python/python/bin/python3.11"
 
-_lib = ctypes.CDLL(str(HERE / "native/libxxh3.so"))
-_lib.xxh3_64.restype = ctypes.c_ulonglong
-_lib.xxh3_64.argtypes = (ctypes.c_char_p, ctypes.c_ulong)
-
-
-def xxh3(data):
-    return _lib.xxh3_64(data, len(data))
+from xxh3 import xxh3  # noqa: E402
 
 
 # ------------------------------------------------------------------ capture

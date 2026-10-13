@@ -47,7 +47,6 @@ filesystems); ST images are written.
 Writes PACK_DIR/replacements/sprites/<SDx>/<file>/<name>.png.
 """
 import argparse
-import ctypes
 import json
 import multiprocessing
 import os
@@ -69,13 +68,7 @@ ST_ALPHA = 143
 # S1.2 preloads frames 1-28 (HUD), 108-129 (coins) and 262-263 (sparkles).
 EFFECT_FRAMES = {("SD1/S1_2", 262), ("SD1/S1_2", 263)}
 
-_lib = ctypes.CDLL(str(Path(__file__).resolve().parent / "native/libxxh3.so"))
-_lib.xxh3_64.restype = ctypes.c_ulonglong
-_lib.xxh3_64.argtypes = (ctypes.c_char_p, ctypes.c_ulong)
-
-
-def xxh3(data):
-    return _lib.xxh3_64(data, len(data))
+from xxh3 import xxh3  # noqa: E402
 
 
 def vram_words(pal_words):

@@ -137,8 +137,11 @@ def main():
     def report():
         if a.progress:
             tmp = a.progress.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"done": done + skipped, "total": len(files)}))
-            tmp.replace(a.progress)
+            try:
+                tmp.write_text(json.dumps({"done": done + skipped, "total": len(files)}))
+                tmp.replace(a.progress)
+            except OSError:     # Windows: the reader has it open; next write wins
+                pass
     report()
     # A tree (assets/sprites/SD1/S1_3/f0001.png ...) is mirrored below DST.
     for f in files:
