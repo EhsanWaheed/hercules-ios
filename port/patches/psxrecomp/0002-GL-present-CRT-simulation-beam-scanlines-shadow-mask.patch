@@ -1,0 +1,241 @@
+From 1eae250026e3ae1b805ff549734ddb28f35966ac Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 23:05:41 +0200
+Subject: [PATCH 2/2] GL present: CRT simulation (beam scanlines, shadow mask,
+ bloom)
+
+Optional present-shader path after the steps of Bisqwit's crt-filter,
+written from its description: linear light, each native line as a
+Gaussian beam that widens with brightness, a staggered RGB shadow
+mask, bloom from a ring of taps, and luma-preserving desaturation of
+out-of-range colours. Active while scanlines are on (F6 toggles it);
+enabled with PSX_CRT=1, tuned by PSX_CRT_MASK / PSX_CRT_BLOOM and the
+scanline strength.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/gpu_gl_renderer.h |   3 +
+ runtime/src/gpu_gl_renderer.c     | 103 ++++++++++++++++++++++++++++++
+ runtime/src/main.cpp              |   8 +++
+ 3 files changed, 114 insertions(+)
+
+diff --git a/runtime/include/gpu_gl_renderer.h b/runtime/include/gpu_gl_renderer.h
+index a506078..e7aaba9 100644
+--- a/runtime/include/gpu_gl_renderer.h
++++ b/runtime/include/gpu_gl_renderer.h
+@@ -272,6 +272,9 @@ void gl_renderer_set_display_aspect(int num, int den);
+  * scanlines returns the on flag and (via out-param) the current strength. */
+ void gl_renderer_set_scanlines(int on, float strength);
+ int  gl_renderer_get_scanlines(float *strength);
++/* CRT simulation in the present pass (beam-shaped scanlines, shadow mask,
++ * bloom); only active while scanlines are on. mask/bloom 0..1. */
++void gl_renderer_set_crt(int on, float mask, float bloom);
+ 
+ /* Presentation-only gamma adjustment. gamma = 1.0 is the identity; values
+  * above 1.0 lift shadow detail and values below 1.0 darken it. The adjustment
+diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
+index a1a90ee..cbbc7a7 100644
+--- a/runtime/src/gpu_gl_renderer.c
++++ b/runtime/src/gpu_gl_renderer.c
+@@ -630,6 +630,12 @@ static int           s_scanline_on = 0;
+ static float         s_scanline_strength = 0.5f;
+ static GLint         s_present_uScanline = -1, s_present_uScanStrength = -1;
+ static GLint         s_present_uScanLines = -1, s_present_uScanScale = -1;
++/* CRT simulation (gl_renderer_set_crt): replaces the plain scanline darkening
++ * in the present shader while scanlines are on, so F6 toggles it as well. */
++static int           s_crt_on = 0;
++static float         s_crt_mask = 0.5f, s_crt_bloom = 0.35f;
++static GLint         s_present_uCrt = -1, s_present_uCrtPx = -1;
++static GLint         s_present_uCrtMask = -1, s_present_uCrtBloom = -1;
+ static GLuint        s_interp_prog = 0, s_interp_tex[3];
+ static GLint         s_interp_uPrev = -1, s_interp_uCurr = -1;
+ static GLint         s_interp_uAlpha = -1, s_interp_uUvRect = -1;
+@@ -1680,6 +1686,67 @@ double gl_renderer_post_aa_gpu_us(void) {
+     "  float mult = 1.0 - (u_scanline_strength * gate) * (1.0 - beam);\n" \
+     "  return rgb * mult;\n" \
+     "}\n"
++/* CRT simulation, after the steps of Bisqwit's crt-filter (written from its
++ * description, not its code): linear light (gamma 2), each PS1 line drawn as a
++ * Gaussian beam that widens with brightness, an RGB shadow mask staggered every
++ * three output rows, bloom from a ring of blurred taps, and out-of-range
++ * colours desaturated toward their luma instead of clipped. u_crt_px is one
++ * native pixel in v_uv units; the beam sharpness follows u_scanline_strength.
++ * The mask fades in from 2 to 3 output pixels per native line. */
++#define PSX_CRT_FUNC \
++    "uniform int   u_crt;\n" \
++    "uniform vec2  u_crt_px;\n" \
++    "uniform float u_crt_mask;\n" \
++    "uniform float u_crt_bloom;\n" \
++    "vec3 crt_tap(vec2 uv){\n" \
++    "  vec2 lo = min(u_uv_rect.xy, u_uv_rect.zw), hi = max(u_uv_rect.xy, u_uv_rect.zw);\n" \
++    "  vec3 c = texture(u_tex, clamp(uv, lo, hi)).rgb;\n" \
++    "  return c * c;\n" \
++    "}\n" \
++    "vec3 psx_crt(vec2 uv){\n" \
++    "  vec2 px = u_crt_px;\n" \
++    "  float ly = uv.y / px.y;\n" \
++    "  float n0 = floor(ly) - 1.0;\n" \
++    "  float sharp = clamp(u_scanline_strength, 0.0, 1.0);\n" \
++    "  vec3 acc = vec3(0.0);\n" \
++    "  for (int k = 0; k < 3; k++) {\n" \
++    "    float lc = n0 + float(k) + 0.5;\n" \
++    "    vec2 p = vec2(uv.x, lc * px.y);\n" \
++    "    vec3 c = 0.6 * crt_tap(p) + 0.2 * (crt_tap(p - vec2(0.3 * px.x, 0.0)) + crt_tap(p + vec2(0.3 * px.x, 0.0)));\n" \
++    "    float l = dot(c, vec3(0.299, 0.587, 0.114));\n" \
++    "    float sigma = mix(mix(0.36, 0.16, sharp), mix(0.50, 0.30, sharp), sqrt(clamp(l, 0.0, 1.0)));\n" \
++    "    float d = (ly - lc) / sigma;\n" \
++    "    acc += c * (exp(-0.5 * d * d) / (sigma * 2.5066283));\n" \
++    "  }\n" \
++    "  if (u_crt_bloom > 0.0) {\n" \
++    "    vec3 g = vec3(0.0);\n" \
++    "    for (int i = 0; i < 12; i++) {\n" \
++    "      float a = float(i) * 0.5235988 + 0.26;\n" \
++    "      float r = (i % 2 == 0) ? 1.5 : 3.0;\n" \
++    "      g += crt_tap(uv + vec2(cos(a), sin(a)) * r * px);\n" \
++    "    }\n" \
++    "    g /= 12.0;\n" \
++    "    acc += u_crt_bloom * 0.5 * g * g;\n" \
++    "  }\n" \
++    "  float lines_px = u_scanline_scale;\n" \
++    "  float mstr = u_crt_mask * clamp(lines_px - 2.0, 0.0, 1.0);\n" \
++    "  if (mstr > 0.0) {\n" \
++    "    vec2 fc = gl_FragCoord.xy;\n" \
++    "    float row = floor(fc.y / 3.0);\n" \
++    "    int ch = int(mod(floor(fc.x + 1.5 * mod(row, 2.0)), 3.0));\n" \
++    "    vec3 m = vec3(1.0 - 0.7 * mstr);\n" \
++    "    if (ch == 0) m.r = 1.0; else if (ch == 1) m.g = 1.0; else m.b = 1.0;\n" \
++    "    if (mod(fc.y, 3.0) < 1.0) m *= 1.0 - 0.25 * mstr;\n" \
++    "    acc *= m / dot(m, vec3(1.0 / 3.0));\n" \
++    "  }\n" \
++    "  acc *= 1.0 + 0.25 * mstr + 0.15 * sharp;\n" \
++    "  float mx = max(acc.r, max(acc.g, acc.b));\n" \
++    "  if (mx > 1.0) {\n" \
++    "    float l = dot(acc, vec3(0.299, 0.587, 0.114));\n" \
++    "    acc = l >= 1.0 ? vec3(1.0) : mix(vec3(l), acc, (1.0 - l) / (mx - l));\n" \
++    "  }\n" \
++    "  return sqrt(max(acc, vec3(0.0)));\n" \
++    "}\n"
+ static const char *PRESENT_FS =
+     "#version 330\n"
+     "in vec2 v_uv; uniform sampler2D u_tex; out vec4 frag;\n"
+@@ -1719,6 +1786,7 @@ static const char *PRESENT_FS =
+     "  return r;\n"
+     "}\n"
+     PSX_SCANLINE_FUNC
++    PSX_CRT_FUNC
+     /* Area resolve (u_sharp == 3) for a supersampled source larger than the
+      * output: average the whole footprint of the output pixel instead of one
+      * tap, which skips source texels (aliasing) once the ratio passes ~1.25.
+@@ -1761,6 +1829,12 @@ static const char *PRESENT_FS =
+     "    }\n"
+     "    c = texture(u_tex, uv);\n"
+     "  }\n"
++    "  if (u_crt != 0 && u_scanline != 0) {\n"
++    "    c.rgb = psx_crt(v_uv);\n"
++    "    if (u_gamma > 0.0 && u_gamma != 1.0) c.rgb = pow(max(c.rgb, vec3(0.0)), vec3(1.0 / u_gamma));\n"
++    "    frag = c;\n"
++    "    return;\n"
++    "  }\n"
+     /* MDEC decodes 4:2:0 video: one Cb/Cr pair per 2x2 pixels, upsampled by
+      * replication, so saturated edges in a 24-bit movie frame show 2-pixel
+      * colour blocks around sharp luma. Chroma smoothing keeps the luma of the
+@@ -5609,6 +5683,18 @@ static void present_set_scanline(GLint uOn, GLint uStr, GLint uLines,
+     if (uLines >= 0) p_glUniform1f(uLines, pitch_lines);
+     if (uScale >= 0) p_glUniform1f(uScale, (float)out_h / (float)disp_lines);
+ }
++/* CRT uniforms for the present program; px_w/px_h are the source texture's
++ * extent in native pixels (v_uv units per native pixel = 1/extent). Zero
++ * turns it off, as for OSD, bezel and already-composed images. */
++static void present_set_crt(float px_w, float px_h) {
++    if (s_present_uCrt < 0) return;
++    const int on = s_crt_on && px_w > 0.0f && px_h > 0.0f;
++    p_glUniform1i(s_present_uCrt, on);
++    if (!on) return;
++    if (s_present_uCrtPx >= 0) p_glUniform2f(s_present_uCrtPx, 1.0f / px_w, 1.0f / px_h);
++    if (s_present_uCrtMask >= 0) p_glUniform1f(s_present_uCrtMask, s_crt_mask);
++    if (s_present_uCrtBloom >= 0) p_glUniform1f(s_present_uCrtBloom, s_crt_bloom);
++}
+ #define PRESENT_SCANLINE(pitch, disp, oh)                                   \
+     present_set_scanline(s_present_uScanline, s_present_uScanStrength,      \
+                          s_present_uScanLines, s_present_uScanScale,        \
+@@ -5641,6 +5727,15 @@ void gl_renderer_set_scanlines(int on, float strength) {
+     s_scanline_strength = strength;
+ }
+ 
++/* CRT simulation (see PSX_CRT_FUNC). Active only while scanlines are on, so the
++ * scanline toggle switches it too; mask and bloom are 0..1. */
++void gl_renderer_set_crt(int on, float mask, float bloom) {
++    GL_RT_SYNC("set_crt");
++    s_crt_on = on ? 1 : 0;
++    s_crt_mask = mask < 0.f ? 0.f : mask > 1.f ? 1.f : mask;
++    s_crt_bloom = bloom < 0.f ? 0.f : bloom > 1.f ? 1.f : bloom;
++}
++
+ int gl_renderer_get_scanlines(float *strength) {
+     if (strength) *strength = s_scanline_strength;
+     return s_scanline_on;
+@@ -6289,6 +6384,10 @@ int gl_renderer_init_context(SDL_Window *win) {
+                 p_glGetUniformLocation(s_present_prog, "u_chroma");
+             s_present_uScanline =
+                 p_glGetUniformLocation(s_present_prog, "u_scanline");
++            s_present_uCrt = p_glGetUniformLocation(s_present_prog, "u_crt");
++            s_present_uCrtPx = p_glGetUniformLocation(s_present_prog, "u_crt_px");
++            s_present_uCrtMask = p_glGetUniformLocation(s_present_prog, "u_crt_mask");
++            s_present_uCrtBloom = p_glGetUniformLocation(s_present_prog, "u_crt_bloom");
+             s_present_uScanStrength =
+                 p_glGetUniformLocation(s_present_prog, "u_scanline_strength");
+             s_present_uScanLines =
+@@ -6470,6 +6569,7 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
+     /* CPU present texture holds exactly the display rect, so v_uv spans it and
+      * pitch == display height == src_h. */
+     PRESENT_SCANLINE(src_h, src_h, lh);
++    present_set_crt((float)src_w, (float)src_h);
+     if (crop) {
+         /* Cropped present keeps left-aligned content; still inset so linear
+          * AA does not blend the cut column with undefined border texels. */
+@@ -9045,6 +9145,7 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
+     present_set_gamma(s_present_uGamma, 0);
+     present_set_sharp(0, 0, 0, 0, 0);   /* OSD is authored at output res */
+     PRESENT_SCANLINE(0, 0, 0);          /* never scanline the host OSD */
++    present_set_crt(0, 0);
+     /* Host OSD bitmaps are top-down (row 0 = top), same as guest CPU
+      * present with v_flip=1: uv (0,0)-(1,1). (0,1)-(1,0) was the hold-last
+      * cancel for already-oriented captures and made toasts upside-down. */
+@@ -9652,6 +9753,7 @@ static void present_target_quad(GLuint tex, float tex_w, float tex_h,
+      * v_flip=0 is the already-composed hold-last drawable (scanlines, if any,
+      * are already baked) — skip it. */
+     PRESENT_SCANLINE(v_flip ? tex_h : 0.0f, v_flip ? h : 0, lh);
++    present_set_crt(v_flip ? tex_w : 0.0f, v_flip ? tex_h : 0.0f);
+     /* Half-texel inset: with GL_LINEAR, corner-mapped UVs make the outermost
+      * dest pixels blend the border texel with VRAM outside the content rect
+      * (visible edge stripe with AA on). Center-mapped UVs keep edge samples
+@@ -9725,6 +9827,7 @@ static void present_bezel(int ww, int wh, int lx, int ly, int lw, int lh) {
+     present_set_gamma(s_present_uGamma, 0);
+     p_glUniform4f(s_present_uUvRect, 0.0f, 0.0f, 1.0f, 1.0f);
+     PRESENT_SCANLINE(0, 0, 0);          /* bezel art is not scanlined */
++    present_set_crt(0, 0);
+     p_glBindVertexArray(s_present_vao);
+     glDrawArrays(GL_TRIANGLES, 0, 3);
+     p_glBindVertexArray(0);
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index fa447c1..81904fa 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -18861,6 +18861,14 @@ session_reboot:
+     }
+     gl_renderer_set_scanlines(g_video_scanlines ? 1 : 0,
+                               g_video_scanline_strength);
++    /* CRT simulation on top of the scanline toggle: PSX_CRT=0/1,
++     * PSX_CRT_MASK / PSX_CRT_BLOOM = 0..1 (a launcher sets these). */
++    if (const char* e = std::getenv("PSX_CRT")) {
++        float mask = 0.5f, bloom = 0.35f;
++        if (const char* m = std::getenv("PSX_CRT_MASK")) mask = (float)atof(m);
++        if (const char* b = std::getenv("PSX_CRT_BLOOM")) bloom = (float)atof(b);
++        gl_renderer_set_crt(*e && *e != '0', mask, bloom);
++    }
+     if (pgxp_arm.geometry || pgxp_arm.texture) {
+         std::fprintf(stdout,
+                      "psxrecomp: geometry correction %s, perspective texturing %s%s%s%s\n",
+-- 
+2.56.0
+

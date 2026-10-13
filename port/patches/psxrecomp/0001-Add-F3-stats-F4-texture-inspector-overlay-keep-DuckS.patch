@@ -1,0 +1,1460 @@
+From ee747d88ee2c4aa4158ac1022579dd907299882c Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 21:43:15 +0200
+Subject: [PATCH 1/2] Add F3 stats / F4 texture inspector overlay; keep
+ DuckStation pack tracking across savestates
+
+- psx_debug_overlay: F3 shows frame timing, draw counts, HD query/match rates
+  and tracked uploads (including large uploads lost to partial writes); F4
+  picks the textured draw under the mouse and explains its replacement (page,
+  CLUT, UV, matched file or why none). Also reachable over the debug server
+  (debug_overlay command) for headless runs.
+- duckstation_texture_pack: explain/tracking summary hooks for the overlay,
+  big-drop accounting, and tracking state save/load so a restored savestate
+  matches replacements without waiting for the game to re-upload (Beetle
+  packs already did this).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/duckstation_texture_pack.h |  14 +
+ runtime/include/gpu_hd_textures.h          |   6 +
+ runtime/include/host_keymap.h              |   2 +
+ runtime/include/host_osd.h                 |   2 +
+ runtime/include/psx_debug_overlay.h        |  53 ++
+ runtime/runtime.cmake                      |   1 +
+ runtime/src/debug_server.c                 |  24 +
+ runtime/src/duckstation_texture_pack.cpp   | 150 +++++-
+ runtime/src/gpu_gl_renderer.c              |  52 +-
+ runtime/src/gpu_hd_textures.cpp            | 109 ++++-
+ runtime/src/gpu_render.c                   |  19 +
+ runtime/src/host_keymap.c                  |   6 +
+ runtime/src/host_osd.c                     |   5 +
+ runtime/src/main.cpp                       |  34 ++
+ runtime/src/psx_debug_overlay.c            | 538 +++++++++++++++++++++
+ 15 files changed, 980 insertions(+), 35 deletions(-)
+ create mode 100644 runtime/include/psx_debug_overlay.h
+ create mode 100644 runtime/src/psx_debug_overlay.c
+
+diff --git a/runtime/include/duckstation_texture_pack.h b/runtime/include/duckstation_texture_pack.h
+index eb0cab4..e2a8bf0 100644
+--- a/runtime/include/duckstation_texture_pack.h
++++ b/runtime/include/duckstation_texture_pack.h
+@@ -130,6 +130,20 @@ void duck_texture_pack_reset_tracking(DuckTexturePack* pack);
+  * This is not a savestate restoration API. Strong replacement on success. */
+ int duck_texture_pack_copy_tracking(DuckTexturePack* destination,
+                                     const DuckTexturePack* source);
++/* Savestate residency: serialize the tracked uploads (rects, active regions
++ * and the upload-time words their hashes come from) so a restored VRAM
++ * matches replacements again without waiting for the game to re-upload.
++ * Page sources are rebuilt from draws and are not saved. Save allocates
++ * with malloc; load replaces the tracking state on success only. */
++int duck_texture_pack_tracking_state_save(const DuckTexturePack* pack,
++                                          uint8_t** data, size_t* size);
++int duck_texture_pack_tracking_state_load(DuckTexturePack* pack,
++                                          const uint8_t* data, size_t size);
++/* Debug overlay: why a draw has (no) replacement, and what is tracked.
++ * Text only, bounded by cap; call where draws are matched. */
++int duck_texture_pack_explain(DuckTexturePack* pack, const HdTextureDrawQuery* query,
++                              char* out, size_t cap);
++int duck_texture_pack_tracking_summary(const DuckTexturePack* pack, char* out, size_t cap);
+ /* Begin before changing native VRAM, end after PSX mask semantics. Default
+  * copies invalidate destination identities. ConvertCopiesToWrites updates an
+  * existing destination write's original extent when its active region covers
+diff --git a/runtime/include/gpu_hd_textures.h b/runtime/include/gpu_hd_textures.h
+index 3fe0223..f359b01 100644
+--- a/runtime/include/gpu_hd_textures.h
++++ b/runtime/include/gpu_hd_textures.h
+@@ -32,6 +32,12 @@ typedef struct GpuHdTextureDiag {
+     uint64_t decoded_images, decode_evictions, decoded_bytes;
+ } GpuHdTextureDiag;
+ void gpu_hd_textures_get_diag(GpuHdTextureDiag* out);
++/* Debug overlay, render thread: replacement file(s) of one draw or the reason
++ * it stays native; tracked uploads, losses and resets. Bounded text. */
++int gpu_hd_textures_describe(uint16_t texpage, uint16_t clut_x, uint16_t clut_y,
++                             const int limits[4], uint32_t texture_window, int semitransparent,
++                             char* out, size_t cap);
++int gpu_hd_textures_tracking_summary(char* out, size_t cap);
+ void gpu_hd_textures_note_applied(void);
+ void gpu_hd_textures_note_gl_cache(int eviction);
+ /* Non-GL backends can observe native draws for dumping; replacements remain
+diff --git a/runtime/include/host_keymap.h b/runtime/include/host_keymap.h
+index 0f17ac9..474a915 100644
+--- a/runtime/include/host_keymap.h
++++ b/runtime/include/host_keymap.h
+@@ -24,6 +24,8 @@ typedef enum HostKeymapAction {
+     HOST_KEYMAP_SCANLINES,        /* default F6 */
+     HOST_KEYMAP_TURBO_TOGGLE,     /* default F9; latches Turbo until pressed again */
+     HOST_KEYMAP_CAPTURE_MARK,     /* default Ctrl+M; freezes the debug capture rings */
++    HOST_KEYMAP_DEBUG_STATS,      /* default F3; performance / HD statistics overlay */
++    HOST_KEYMAP_DEBUG_INSPECT,    /* default F4; object inspector under the mouse */
+     HOST_KEYMAP_ACTION_COUNT
+ } HostKeymapAction;
+ 
+diff --git a/runtime/include/host_osd.h b/runtime/include/host_osd.h
+index d4a184e..2490007 100644
+--- a/runtime/include/host_osd.h
++++ b/runtime/include/host_osd.h
+@@ -18,6 +18,8 @@ extern "C" {
+ 
+ /* Top-left text toast. duration_ms <= 0 uses 2000. */
+ void host_osd_push(const char *msg, int duration_ms);
++/* 8x8 glyph rows (bit 0 = left pixel) of the OSD font, for other overlays. */
++const uint8_t *host_osd_glyph(int ch);
+ 
+ /* Persistent top-left status text. Passing NULL/empty clears it. */
+ void host_osd_set_status(const char *msg);
+diff --git a/runtime/include/psx_debug_overlay.h b/runtime/include/psx_debug_overlay.h
+new file mode 100644
+index 0000000..9f073c7
+--- /dev/null
++++ b/runtime/include/psx_debug_overlay.h
+@@ -0,0 +1,53 @@
++#ifndef PSX_DEBUG_OVERLAY_H
++#define PSX_DEBUG_OVERLAY_H
++
++/* On-screen debug overlay: F3 statistics (frame rate, CPU, GPU, RAM, HD
++ * textures and their tracking), F4 object inspector (the topmost textured
++ * draw under the mouse, its texture and why it is HD or SD). Off by default;
++ * every hook returns at once while both are off. */
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Emulation thread: hotkeys, mouse (drawable pixels, top-left origin). */
++void psx_dbgov_toggle_stats(void);
++void psx_dbgov_toggle_inspect(void);
++int  psx_dbgov_inspect_active(void);
++void psx_dbgov_mouse_motion(int x, int y);
++void psx_dbgov_mouse_click(void);
++/* Debug server: set both modes (-1 keeps), point at a display-relative guest
++ * pixel, read the panel text (lines joined by newlines). */
++void psx_dbgov_set_modes(int stats, int inspect, int frozen);
++void psx_dbgov_point_guest(int gx, int gy);
++int  psx_dbgov_panel_text(char *out, int cap);
++int  psx_dbgov_draws_near(int gx, int gy, char *out, int cap);
++
++/* Emulation thread, renderer facade: textured draws in draw coordinates
++ * (before the draw offset). limits = u/v first/last texels. */
++int  psx_dbgov_wants_draws(void);
++void psx_dbgov_note_draw(const int *xs, const int *ys, int vertices, const int limits[4],
++                         uint16_t clut_x, uint16_t clut_y, uint16_t texpage,
++                         uint32_t texture_window, int semitransparent);
++/* Emulation thread, once per guest frame. */
++void psx_dbgov_frame_end(void);
++
++/* Render thread (or the emulation thread without one), every present. */
++void psx_dbgov_set_present_geometry(int disp_x, int disp_y, int disp_w, int disp_h,
++                                    int lx, int ly, int lw, int lh, int ww, int wh);
++void psx_dbgov_render_tick(void);
++/* Where draws are matched (also without presents): answers the inspector's
++ * pending question and refreshes the tracking summary. */
++void psx_dbgov_service(void);
++int  psx_dbgov_needs_present(void);
++int  psx_dbgov_overlay_image(const uint32_t **pixels, int *w, int *h);
++/* Selected object's frame in drawable pixels (top-left origin), colour ARGB. */
++int  psx_dbgov_highlight(int *x, int *y, int *w, int *h, uint32_t *argb);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* PSX_DEBUG_OVERLAY_H */
+diff --git a/runtime/runtime.cmake b/runtime/runtime.cmake
+index fb0b198..dbd972e 100644
+--- a/runtime/runtime.cmake
++++ b/runtime/runtime.cmake
+@@ -433,6 +433,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
+     ${PSXRECOMP_ROOT}/runtime/src/bios_hle_plan.c
+     ${PSXRECOMP_ROOT}/runtime/src/savestate.c
+     ${PSXRECOMP_ROOT}/runtime/src/psx_savestate_menu.c
++    ${PSXRECOMP_ROOT}/runtime/src/psx_debug_overlay.c
+     ${PSXRECOMP_ROOT}/runtime/src/psx_rewind.c
+     ${PSXRECOMP_ROOT}/runtime/src/host_osd.c
+     ${PSXRECOMP_ROOT}/runtime/src/host_keymap.c
+diff --git a/runtime/src/debug_server.c b/runtime/src/debug_server.c
+index 27b495e..cc4bcc7 100644
+--- a/runtime/src/debug_server.c
++++ b/runtime/src/debug_server.c
+@@ -17,6 +17,7 @@
+ #endif
+ #include <time.h>
+ #include "debug_server.h"
++#include "psx_debug_overlay.h"
+ #include "host_launch_timing.h"
+ #include "host_sampler.h"
+ #include "guest_cycle_profile.h"
+@@ -10244,6 +10245,28 @@ encode:;
+  * surface was actually allocated at (after the driver/memory clamp), the
+  * driver limit, the hr surface size, and the window's point and pixel sizes
+  * (the HiDPI drawable). Everything a preset needs to be verified against. */
++/* debug_overlay: drive the F3/F4 overlay headless. {stats, inspect, frozen:
++ * 0/1, x, y: display-relative guest pixel to point at}. Returns the panel. */
++static void handle_debug_overlay(int id, const char *json)
++{
++    psx_dbgov_set_modes(json_get_int(json, "stats", -1), json_get_int(json, "inspect", -1),
++                        json_get_int(json, "frozen", -1));
++    const int x = json_get_int(json, "x", -1), y = json_get_int(json, "y", -1);
++    if (x >= 0 && y >= 0) psx_dbgov_point_guest(x, y);
++    char text[4096], esc[8192];
++    if (json_get_int(json, "near", 0) && x >= 0 && y >= 0) psx_dbgov_draws_near(x, y, text, sizeof text);
++    else psx_dbgov_panel_text(text, sizeof text);
++    size_t j = 0;
++    for (size_t i = 0; text[i] && j + 7 < sizeof esc; i++) {
++        const char c = text[i];
++        if (c == '"' || c == '\\') { esc[j++] = '\\'; esc[j++] = c; }
++        else if (c == '\n') { esc[j++] = '\\'; esc[j++] = 'n'; }
++        else if ((unsigned char)c >= 32) esc[j++] = c;
++    }
++    esc[j] = '\0';
++    send_fmt("{\"id\":%d,\"ok\":true,\"panel\":\"%s\"}", id, esc);
++}
++
+ static void handle_hd_textures(int id, const char *json)
+ {
+     GpuHdTextureDiag info;
+@@ -16122,6 +16145,7 @@ static const CmdEntry s_commands[] = {
+     { "wide_full",         handle_wide_full },
+     { "video_info",        handle_video_info },
+     { "hd_textures",       handle_hd_textures },
++    { "debug_overlay",     handle_debug_overlay },
+     { "dynres",            handle_dynres },
+     { "dynres_force",      handle_dynres_force },
+     { "dynres_check",      handle_dynres_check },
+diff --git a/runtime/src/duckstation_texture_pack.cpp b/runtime/src/duckstation_texture_pack.cpp
+index 12c5e73..8d0f96c 100644
+--- a/runtime/src/duckstation_texture_pack.cpp
++++ b/runtime/src/duckstation_texture_pack.cpp
+@@ -12,6 +12,7 @@
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <deque>
+ #include <filesystem>
+@@ -50,6 +51,7 @@ constexpr size_t kMaxSnapshots = 64u * 1024u * 1024u;
+ constexpr size_t kMaxPaletteRecords = 8192;
+ constexpr size_t kMaxDumpBytes = 32u * 1024u * 1024u;
+ constexpr size_t kMaxParts = 64;
++constexpr size_t kBigUpload = 64u * 64u;
+ 
+ void error_text(char* dest, size_t capacity, const std::string& text) {
+     if (dest && capacity) std::snprintf(dest, capacity, "%s", text.c_str());
+@@ -363,6 +365,10 @@ struct DuckTexturePack {
+     size_t ignored = 0, ambiguous = 0;
+     bool geometry_limit_reported = false, dump_limit_reported = false;
+     unsigned dump_draw_tick = 0;
++    /* Debug overlay: tracked uploads of at least kBigUpload words that a
++     * native write removed entirely (too many splits, or fully covered). */
++    uint64_t big_drops = 0;
++    Rect last_big_drop{}, last_big_drop_by{};
+     std::chrono::steady_clock::time_point next_dump_checkpoint =
+         std::chrono::steady_clock::now() + std::chrono::seconds(1);
+     Worker worker;
+@@ -831,7 +837,12 @@ void duck_texture_pack_invalidate(DuckTexturePack* p, uint16_t x, uint16_t y, ui
+         for (const auto& upload : p->uploads) {
+             const Rect cut = intersection(upload.active,r);
+             if (!cut.w || !cut.h) { if (survivors.size() < kMaxUploads) survivors.push_back(upload); continue; }
+-            if (upload.splits >= p->config.max_vram_write_splits || contains(r,upload.active)) continue;
++            if (upload.splits >= p->config.max_vram_write_splits || contains(r,upload.active)) {
++                if (size_t(upload.source->rect.w) * upload.source->rect.h >= kBigUpload) {
++                    ++p->big_drops; p->last_big_drop = upload.active; p->last_big_drop_by = r;
++                }
++                continue;
++            }
+             const Rect a = upload.active;
+             const Rect fragments[] = {
+                 {a.x,a.y,a.w,cut.y-a.y}, {a.x,cut.y+cut.h,a.w,a.y+a.h-cut.y-cut.h},
+@@ -902,6 +913,143 @@ int duck_texture_pack_copy_tracking(DuckTexturePack* destination, const DuckText
+         return 1;
+     } catch (...) { return 0; }
+ }
++/* "DKTR" v1: u32 source count, per source {u16 x,y,w,h; u8 kind, used;
++ * w*h u16 words}, u32 upload count, per upload {u32 source; u16 x,y,w,h;
++ * u32 splits}. Little-endian. */
++constexpr uint32_t kTrackingMagic = 0x52544B44u, kTrackingVersion = 1u;
++int duck_texture_pack_tracking_state_save(const DuckTexturePack* p, uint8_t** data, size_t* size) {
++    if (data) *data = nullptr;
++    if (size) *size = 0;
++    if (!p || !data || !size) return 0;
++    try {
++        std::vector<const Source*> order;
++        std::unordered_map<const Source*, uint32_t> index;
++        for (const auto& upload : p->uploads)
++            if (index.emplace(upload.source.get(), uint32_t(order.size())).second) order.push_back(upload.source.get());
++        std::vector<uint8_t> out;
++        const auto u8 = [&](unsigned v) { out.push_back(uint8_t(v)); };
++        const auto u16 = [&](unsigned v) { u8(v & 0xFF); u8((v >> 8) & 0xFF); };
++        const auto u32 = [&](uint32_t v) { u16(v & 0xFFFF); u16(v >> 16); };
++        const auto rect = [&](const Rect& r) { u16(r.x); u16(r.y); u16(r.w); u16(r.h); };
++        u32(kTrackingMagic); u32(kTrackingVersion); u32(uint32_t(order.size()));
++        for (const Source* s : order) {
++            rect(s->rect); u8(s->kind); u8(s->used);
++            for (uint16_t w : s->words) u16(w);
++        }
++        u32(uint32_t(p->uploads.size()));
++        for (const auto& upload : p->uploads) { u32(index[upload.source.get()]); rect(upload.active); u32(upload.splits); }
++        uint8_t* buffer = static_cast<uint8_t*>(std::malloc(out.size()));
++        if (!buffer) return 0;
++        std::memcpy(buffer, out.data(), out.size());
++        *data = buffer; *size = out.size();
++        return 1;
++    } catch (...) { return 0; }
++}
++int duck_texture_pack_tracking_state_load(DuckTexturePack* p, const uint8_t* data, size_t size) {
++    if (!p || !data) return 0;
++    try {
++        size_t at = 0;
++        bool ok = true;
++        const auto u8 = [&]() -> unsigned { if (at + 1 > size) { ok = false; return 0; } return data[at++]; };
++        const auto u16 = [&]() -> unsigned { const unsigned lo = u8(); return lo | (u8() << 8); };
++        const auto u32 = [&]() -> uint32_t { const uint32_t lo = u16(); return lo | (uint32_t(u16()) << 16); };
++        const auto rect = [&]() { Rect r; r.x = u16(); r.y = u16(); r.w = u16(); r.h = u16(); return r; };
++        if (u32() != kTrackingMagic || u32() != kTrackingVersion) return 0;
++        const uint32_t source_count = u32();
++        if (!ok || source_count > kMaxUploads) return 0;
++        std::deque<std::shared_ptr<Source>> sources;
++        size_t bytes = 0;
++        for (uint32_t i = 0; i < source_count; ++i) {
++            auto s = std::make_shared<Source>();
++            s->rect = rect(); s->kind = uint8_t(u8()); s->used = u8() != 0; s->dump_owner = p;
++            const size_t words = size_t(s->rect.w) * s->rect.h;
++            if (!ok || !valid_rect(s->rect) || s->kind != DUCK_TEXTURE_UPLOAD || at + 2 * words > size) return 0;
++            s->words.resize(words);
++            for (auto& w : s->words) w = uint16_t(u16());
++            s->hash = duck_texture_hash_words_le(s->words.data(), s->words.size());
++            bytes += words * sizeof(uint16_t);
++            sources.push_back(std::move(s));
++        }
++        const uint32_t upload_count = u32();
++        if (!ok || upload_count > kMaxUploads || bytes > p->snapshot_budget) return 0;
++        std::vector<Upload> uploads;
++        uploads.reserve(upload_count);
++        for (uint32_t i = 0; i < upload_count; ++i) {
++            const uint32_t source = u32(); const Rect active = rect(); const unsigned splits = u32();
++            if (!ok || source >= sources.size() || !valid_rect(active) || !contains(sources[source]->rect, active)) return 0;
++            uploads.push_back({sources[source], active, splits});
++        }
++        if (at != size || duck_texture_pack_flush_dumps(p, nullptr, 0) < 0) return 0;
++        p->uploads.swap(uploads); p->pages.clear(); p->sources.swap(sources);
++        p->snapshot_bytes = bytes; p->palette_records = 0;
++        p->copy_updates.clear(); p->copy_pending = false;
++        p->rect_cache.clear(); p->match_cache.clear(); ++p->revision;
++        return 1;
++    } catch (...) { return 0; }
++}
++int duck_texture_pack_explain(DuckTexturePack* p, const HdTextureDrawQuery* q, char* out, size_t cap) {
++    if (!out || !cap) return 0;
++    out[0] = '\0';
++    if (!p || !q) return 0;
++    Rect wanted{};
++    if (!query_rect(q, wanted)) { std::snprintf(out, cap, "page not supported by the pack"); return 1; }
++    try {
++        const unsigned ppw = expansion(q->depth);
++        int n = 0;
++        unsigned uploads = 0;
++        for (const auto& upload : p->uploads) {
++            if (!intersects(upload.active, wanted)) continue;
++            ++uploads;
++            const Rect s = upload.source->rect;
++            const auto found = p->uploads_by_hash[q->depth].find(upload.source->hash);
++            unsigned names = 0, sized = 0, placed = 0, palette = 0;
++            if (found != p->uploads_by_hash[q->depth].end()) for (const size_t index : found->second) {
++                ++names;
++                const auto& k = p->entries[index].key;
++                if (s.w != k.source_width_words || s.h != k.source_height) continue;
++                ++sized;
++                const Rect rect{s.x+k.offset_x/ppw, s.y+k.offset_y, unsigned(k.width)/ppw, k.height};
++                if (!intersects(rect, wanted)) continue;
++                ++placed;
++                bool valid = false;
++                if (palette_hash(*q, k.palette_min, k.palette_max, valid) == k.palette_hash && valid) ++palette;
++            }
++            if (n < 0 || size_t(n) >= cap) break;
++            n += std::snprintf(out + n, cap - n, "%supload %ux%u@%u,%u %016llX: %u names, %u size, %u here, %u palette",
++                               uploads > 1 ? "\n" : "", s.w, s.h, s.x, s.y,
++                               (unsigned long long)upload.source->hash, names, sized, placed, palette);
++            if (uploads >= 3) break;
++        }
++        if (!uploads) std::snprintf(out, cap, "no tracked upload under this texture");
++        return 1;
++    } catch (...) { return 0; }
++}
++int duck_texture_pack_tracking_summary(const DuckTexturePack* p, char* out, size_t cap) {
++    if (!out || !cap) return 0;
++    out[0] = '\0';
++    if (!p) return 0;
++    try {
++        std::vector<const Upload*> big;
++        for (const auto& upload : p->uploads)
++            if (size_t(upload.source->rect.w) * upload.source->rect.h >= kBigUpload) big.push_back(&upload);
++        std::sort(big.begin(), big.end(), [](const Upload* a, const Upload* b) {
++            return size_t(a->active.w) * a->active.h > size_t(b->active.w) * b->active.h;
++        });
++        int n = std::snprintf(out, cap, "tracked %zu uploads, %zu KB", p->uploads.size(), p->snapshot_bytes / 1024);
++        for (size_t i = 0; i < big.size() && i < 4 && n >= 0 && size_t(n) < cap; ++i) {
++            const Rect s = big[i]->source->rect, a = big[i]->active;
++            n += std::snprintf(out + n, cap - n, "\n  %ux%u@%u,%u", s.w, s.h, s.x, s.y);
++            if (a.x != s.x || a.y != s.y || a.w != s.w || a.h != s.h)
++                n += std::snprintf(out + n, cap - n, " part %ux%u@%u,%u split %u", a.w, a.h, a.x, a.y, big[i]->splits);
++        }
++        if (p->big_drops && n >= 0 && size_t(n) < cap)
++            std::snprintf(out + n, cap - n, "\nlost %llu big: %ux%u@%u,%u by write %ux%u@%u,%u",
++                          (unsigned long long)p->big_drops, p->last_big_drop.w, p->last_big_drop.h,
++                          p->last_big_drop.x, p->last_big_drop.y, p->last_big_drop_by.w,
++                          p->last_big_drop_by.h, p->last_big_drop_by.x, p->last_big_drop_by.y);
++        return 1;
++    } catch (...) { return 0; }
++}
+ int duck_texture_pack_track_upload(DuckTexturePack* p, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                                   const uint16_t* vram, size_t count) {
+     if (!p) return 0;
+diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
+index 1767ac1..a1a90ee 100644
+--- a/runtime/src/gpu_gl_renderer.c
++++ b/runtime/src/gpu_gl_renderer.c
+@@ -90,6 +90,7 @@
+ #include "mod_plugins.h"      /* PSX_MOD_RENDER_PASS_* reasons */
+ #include "host_osd.h"
+ #include "psx_savestate_menu.h"
++#include "psx_debug_overlay.h"
+ #include "host_time.h"
+ #include "latency_ring.h"
+ #include "gpu_timeline.h"
+@@ -1382,6 +1383,11 @@ static void pres_record(int path, int dx, int dy, int w, int h,
+         (path==GL_PRES_VRAM || path==GL_PRES_WIDE || path==GL_PRES_CPU || path==GL_PRES_BLANK);
+     s_native_surface_rect[0]=lx;s_native_surface_rect[1]=ly;
+     s_native_surface_rect[2]=lw;s_native_surface_rect[3]=lh;
++    if (path == GL_PRES_VRAM || path == GL_PRES_WIDE || path == GL_PRES_INTERP || path == GL_PRES_STEREO) {
++        int dww = 0, dwh = 0;
++        SDL_GL_GetDrawableSize(s_win, &dww, &dwh);
++        psx_dbgov_set_present_geometry(dx, dy, w, h, lx, ly, lw, lh, dww, dwh);
++    }
+     /* The ring metadata stays always-on, but pixel probing must not: each
+      * glReadPixels synchronously drains queued GPU work. Two probes per frame
+      * were enough to make Tomba 2 miss its frame budget. */
+@@ -9142,8 +9148,8 @@ static void present_image_ring_capture_gl(void) {
+  * at record time; replay draws that copy (ov_* below), never the live ones. */
+ static struct {
+     int valid, needs_present;
+-    const uint32_t *px[4];
+-    int w[4], h[4];
++    const uint32_t *px[5];
++    int w[5], h[5];
+     float slide;
+ } s_rth_ov;
+ static int ov_image(int i, const uint32_t **px, int *w, int *h) {
+@@ -9155,7 +9161,8 @@ static int ov_image(int i, const uint32_t **px, int *w, int *h) {
+     case 0: return host_osd_image(px, w, h);
+     case 1: return host_osd_volume_image(px, w, h);
+     case 2: return psx_rewind_overlay_image(px, w, h);
+-    default: return psx_savestate_menu_overlay_image(px, w, h);
++    case 3: return psx_savestate_menu_overlay_image(px, w, h);
++    default: return psx_dbgov_overlay_image(px, w, h);
+     }
+ }
+ static float ov_rewind_slide(void) {
+@@ -9163,7 +9170,7 @@ static float ov_rewind_slide(void) {
+ }
+ static int ov_needs_present(void) {
+     return (rth_replaying() && s_rth_ov.valid) ? s_rth_ov.needs_present
+-                                               : host_osd_needs_present();
++                                               : (host_osd_needs_present() || psx_dbgov_needs_present());
+ }
+ 
+ static uint64_t s_swaps_total = 0;   /* every swap, real or generated (diagnostic) */
+@@ -9433,6 +9440,22 @@ static void gl_swap_with_osd(void) {
+             }
+             if (ov_image(3, &px, &ow, &oh) && px)
+                 gl_draw_osd_image(px, ow, oh, ww, wh, 0, 0, ww, wh);
++            if (ov_image(4, &px, &ow, &oh) && px) {
++                /* Debug overlay: panel top-left, frame around the inspected object. */
++                int hx, hy, hw, hh;
++                uint32_t argb;
++                psx_dbgov_render_tick();
++                gl_draw_osd_image(px, ow, oh, ow * ui, oh * ui, margin, margin, ww, wh);
++                if (psx_dbgov_highlight(&hx, &hy, &hw, &hh, &argb)) {
++                    const int t = ui > 1 ? ui : 2;
++                    gl_draw_osd_image(&argb, 1, 1, hw, t, hx, hy, ww, wh);
++                    gl_draw_osd_image(&argb, 1, 1, hw, t, hx, hy + hh - t, ww, wh);
++                    gl_draw_osd_image(&argb, 1, 1, t, hh, hx, hy, ww, wh);
++                    gl_draw_osd_image(&argb, 1, 1, t, hh, hx + hw - t, hy, ww, wh);
++                }
++            } else {
++                psx_dbgov_render_tick();
++            }
+         }
+     }
+     if (!rth_replaying()) host_osd_present_done();   /* replay: done at record */
+@@ -10765,18 +10788,18 @@ static int rth_record_mode(void) {
+ 
+ /* Present records carry the host overlays the emulation thread rasterized. */
+ typedef struct RthOvHdr {
+-    int32_t needs_present, has, w[4], h[4];
++    int32_t needs_present, has, w[5], h[5];
+     float   slide;
+     int32_t args[8], nargs;
+ } RthOvHdr;
+ 
+ static int rth_record_present(uint16_t op, int n, const int32_t *v) {
+-    const uint32_t *px[4] = { NULL, NULL, NULL, NULL };
+-    int w[4] = { 0 }, h[4] = { 0 };
++    const uint32_t *px[5] = { NULL, NULL, NULL, NULL, NULL };
++    int w[5] = { 0 }, h[5] = { 0 };
+     RthOvHdr hd;
+     memset(&hd, 0, sizeof hd);
+-    hd.needs_present = host_osd_needs_present();
+-    for (int i = 0; i < 4; i++) {
++    hd.needs_present = host_osd_needs_present() || psx_dbgov_needs_present();
++    for (int i = 0; i < 5; i++) {
+         if (ov_image(i, &px[i], &w[i], &h[i]) && px[i] && w[i] > 0 && h[i] > 0) {
+             hd.has |= 1 << i; hd.w[i] = w[i]; hd.h[i] = h[i];
+         }
+@@ -10785,13 +10808,13 @@ static int rth_record_present(uint16_t op, int n, const int32_t *v) {
+     hd.nargs = n;
+     for (int i = 0; i < n && i < 8; i++) hd.args[i] = v[i];
+     size_t bytes = sizeof hd;
+-    for (int i = 0; i < 4; i++)
++    for (int i = 0; i < 5; i++)
+         if (hd.has & (1 << i)) bytes += (size_t)hd.w[i] * hd.h[i] * 4u;
+     uint8_t *p = (uint8_t *)rt_cmd_begin(op, 0, (uint32_t)bytes);
+     if (!p) return 0;
+     memcpy(p, &hd, sizeof hd);
+     uint8_t *q = p + sizeof hd;
+-    for (int i = 0; i < 4; i++)
++    for (int i = 0; i < 5; i++)
+         if (hd.has & (1 << i)) {
+             size_t n4 = (size_t)hd.w[i] * hd.h[i] * 4u;
+             memcpy(q, px[i], n4);
+@@ -10835,7 +10858,7 @@ static void rth_present_payload(uint16_t op, const uint8_t *p) {
+     s_rth_ov.valid = 1;
+     s_rth_ov.needs_present = hd.needs_present;
+     s_rth_ov.slide = hd.slide;
+-    for (int i = 0; i < 4; i++)
++    for (int i = 0; i < 5; i++)
+         if (hd.has & (1 << i)) {
+             s_rth_ov.px[i] = (const uint32_t *)q;
+             s_rth_ov.w[i] = hd.w[i];
+@@ -12670,7 +12693,7 @@ static void fg_generate_timed(double t) {
+         s_rth_ov.valid = 1;
+         s_rth_ov.needs_present = hd.needs_present;
+         s_rth_ov.slide = hd.slide;
+-        for (int i = 0; i < 4; i++)
++        for (int i = 0; i < 5; i++)
+             if (hd.has & (1 << i)) {
+                 s_rth_ov.px[i] = (const uint32_t *)qq;
+                 s_rth_ov.w[i] = hd.w[i]; s_rth_ov.h[i] = hd.h[i];
+@@ -13697,6 +13720,9 @@ static void rth_ring_capture_now(const int32_t *a) {
+     const uint32_t frame = (uint32_t)a[0];
+     const int wide = a[1], base_x = a[2], disp_y = a[3], disp_h = a[4];
+     const int cx = a[5], cy = a[6], cw = a[7], ch = a[8];
++    /* Headless has no window: the debug overlay maps 1:1 onto the display. */
++    psx_dbgov_set_present_geometry(cx, cy, cw, ch, 0, 0, cw, ch, cw, ch);
++    psx_dbgov_render_tick();
+     size_t need = (size_t)1024 * 4 * 512 * 4;
+     if ((size_t)cw * s_out_scale * ch * s_out_scale > need)
+         need = (size_t)cw * s_out_scale * ch * s_out_scale;
+diff --git a/runtime/src/gpu_hd_textures.cpp b/runtime/src/gpu_hd_textures.cpp
+index 62811dd..65bbd7a 100644
+--- a/runtime/src/gpu_hd_textures.cpp
++++ b/runtime/src/gpu_hd_textures.cpp
+@@ -2,12 +2,14 @@
+ #include "gpu_gl_renderer.h"
+ #include "hd_texture_pack.h"
+ #include "duckstation_texture_pack.h"
++#include "psx_debug_overlay.h"
+ 
+ #include <algorithm>
+ #include <array>
+ #include <cmath>
+ #include <vector>
+ #include <cstdio>
++#include <cstdint>
+ #include <cstdlib>
+ #include <cstring>
+ #include <deque>
+@@ -405,7 +407,16 @@ extern "C" void gpu_hd_textures_note_gl_cache(int eviction) {
+ }
+ extern "C" void gpu_hd_textures_bind_vram(const uint16_t* vram) { native_vram = vram; }
+ extern "C" void gpu_hd_textures_suppress_dumps(int on) { dumps_suppressed = on != 0; }
+-extern "C" void gpu_hd_textures_set_vram(const uint16_t* vram) { native_vram = vram; gpu_hd_textures_reset_tracking(); }
++namespace { void reset_tracking_because(const char* reason); }
++extern "C" void gpu_hd_textures_set_vram(const uint16_t* vram) { native_vram = vram; reset_tracking_because("renderer init"); }
++namespace {
++const char* s_reset_reason = "none";
++uint64_t s_reset_count = 0;
++void reset_tracking_because(const char* reason) {
++    if (session) { s_reset_reason = reason; ++s_reset_count; }
++    gpu_hd_textures_reset_tracking();
++}
++}
+ extern "C" void gpu_hd_textures_reset_tracking(void) {
+     if (!session) return;
+     gl_renderer_clear_hd_texture_cache();
+@@ -437,40 +448,59 @@ extern "C" void gpu_hd_textures_end_copy(void) {
+ }
+ namespace {
+ constexpr uint32_t kResidencyMagic = 0x52444850u; /* "PHDR" */
+-constexpr uint32_t kResidencyVersion = 2u;   /* 2: + the pack's identity */
+-constexpr size_t kResidencyHeader = 16u;
++constexpr uint32_t kResidencyVersion = 3u;   /* 2: + the pack's identity, 3: + DuckStation tracking */
++constexpr size_t kResidencyHeader = 24u;     /* magic, version, VRAM CRC, identity, Beetle size, Duck size */
+ void put32(uint8_t* at, uint32_t v) { for (int i = 0; i < 4; ++i) at[i] = uint8_t(v >> (8 * i)); }
+ uint32_t get32(const uint8_t* at) { uint32_t v = 0; for (int i = 0; i < 4; ++i) v |= uint32_t(at[i]) << (8 * i); return v; }
+ }
+ extern "C" int gpu_hd_textures_residency_save(uint8_t** data, size_t* size) {
+     if (data) *data = nullptr;
+     if (size) *size = 0;
+-    if (!data || !size || !session || !session->beetle || !native_vram) return 0;
+-    uint8_t* tracking = nullptr; size_t tracking_size = 0;
+-    if (!hd_texture_pack_tracking_state_save(session->beetle, &tracking, &tracking_size)) return 0;
+-    uint8_t* out = static_cast<uint8_t*>(std::malloc(kResidencyHeader + tracking_size));
+-    if (!out) { std::free(tracking); return 0; }
++    if (!data || !size || !session || (!session->beetle && !session->duck) || !native_vram) return 0;
++    uint8_t* beetle = nullptr; size_t beetle_size = 0;
++    uint8_t* duck = nullptr; size_t duck_size = 0;
++    if (session->beetle && !hd_texture_pack_tracking_state_save(session->beetle, &beetle, &beetle_size)) return 0;
++    if (session->duck && !duck_texture_pack_tracking_state_save(session->duck, &duck, &duck_size)) {
++        std::free(beetle); return 0;
++    }
++    uint8_t* out = static_cast<uint8_t*>(std::malloc(kResidencyHeader + beetle_size + duck_size));
++    if (!out || beetle_size > UINT32_MAX || duck_size > UINT32_MAX) {
++        std::free(out); std::free(beetle); std::free(duck); return 0;
++    }
+     put32(out, kResidencyMagic); put32(out + 4, kResidencyVersion);
+     put32(out + 8, hd_texture_crc32_words_le(native_vram, kVramWords));
+-    put32(out + 12, hd_texture_pack_identity(session->beetle));
+-    if (tracking_size) std::memcpy(out + kResidencyHeader, tracking, tracking_size);
+-    std::free(tracking);
+-    *data = out; *size = kResidencyHeader + tracking_size;
++    put32(out + 12, session->beetle ? hd_texture_pack_identity(session->beetle) : 0u);
++    put32(out + 16, uint32_t(beetle_size)); put32(out + 20, uint32_t(duck_size));
++    if (beetle_size) std::memcpy(out + kResidencyHeader, beetle, beetle_size);
++    if (duck_size) std::memcpy(out + kResidencyHeader + beetle_size, duck, duck_size);
++    std::free(beetle); std::free(duck);
++    *data = out; *size = kResidencyHeader + beetle_size + duck_size;
+     return 1;
+ }
+ extern "C" int gpu_hd_textures_residency_load(const uint8_t* data, size_t size) {
+-    if (!data || size < kResidencyHeader || !session || !session->beetle || !native_vram) return 0;
++    if (!data || size < kResidencyHeader || !session || !native_vram) return 0;
+     if (get32(data) != kResidencyMagic || get32(data + 4) != kResidencyVersion) return 0;
+-    /* Saved with another pack: its residency names other uploads. */
+-    if (get32(data + 12) != hd_texture_pack_identity(session->beetle)) return 0;
+     if (get32(data + 8) != hd_texture_crc32_words_le(native_vram, kVramWords)) return 0;
+-    if (!hd_texture_pack_tracking_state_check(data + kResidencyHeader, size - kResidencyHeader)) return 0;
+-    return hd_texture_pack_tracking_state_load(session->beetle, data + kResidencyHeader,
+-                                               size - kResidencyHeader);
++    const size_t beetle_size = get32(data + 16), duck_size = get32(data + 20);
++    if (kResidencyHeader + beetle_size + duck_size != size) return 0;
++    const uint8_t* beetle = data + kResidencyHeader;
++    const uint8_t* duck = beetle + beetle_size;
++    int restored = 1;
++    if (session->beetle && beetle_size) {
++        /* Saved with another pack: its residency names other uploads. */
++        restored &= get32(data + 12) == hd_texture_pack_identity(session->beetle) &&
++                    hd_texture_pack_tracking_state_check(beetle, beetle_size) &&
++                    hd_texture_pack_tracking_state_load(session->beetle, beetle, beetle_size);
++    }
++    /* DuckStation keys hash the uploaded words themselves, so any pack can
++     * reuse the tracked uploads of a matching VRAM. */
++    if (session->duck && duck_size)
++        restored &= duck_texture_pack_tracking_state_load(session->duck, duck, duck_size);
++    return restored;
+ }
+ extern "C" void gpu_hd_textures_invalidate(int x, int y, int width, int height) {
+     if (!session || width < 1 || height < 1) return;
+-    if (width > 1024 || height > 512) { gpu_hd_textures_reset_tracking(); return; }
++    if (width > 1024 || height > 512) { reset_tracking_because("whole-VRAM write"); return; }
+     hd_texture_pack_invalidate(session->beetle, x & 1023, y & 511, width, height);
+     duck_texture_pack_invalidate(session->duck, x & 1023, y & 511, width, height);
+ }
+@@ -478,7 +508,7 @@ extern "C" void gpu_hd_textures_track_upload(int x, int y, int width, int height
+                                              const uint16_t* words) {
+     (void)words;
+     if (!session || !native_vram || width < 1 || width > 1024 || height < 1 || height > 512) return;
+-    if (width == 1024 && height == 512) { gpu_hd_textures_reset_tracking(); return; }
++    if (width == 1024 && height == 512) { reset_tracking_because("whole-VRAM upload"); return; }
+     /* gpu.c's A0 staging already contains post-mask words. Read the canonical
+      * mirror here also for host-initiated transfers which use raw input. */
+     const size_t count = static_cast<size_t>(width) * height;
+@@ -513,7 +543,7 @@ extern "C" void gpu_hd_textures_track_upload(int x, int y, int width, int height
+     }
+ }
+ extern "C" void gpu_hd_textures_restage(void) {
+-    gpu_hd_textures_reset_tracking();
++    reset_tracking_because("VRAM restage");
+     if (!session || !session->beetle || !native_vram) return;
+     /* Only a rectangle whose restored words still hash to a replacement key
+      * becomes resident again: the same words at the same place as an upload
+@@ -535,6 +565,7 @@ static int acquire_draw(uint16_t tp, uint16_t cx, uint16_t cy,
+     if (!image) return 0;
+     *image = {};
+     if (!session) return 0;
++    psx_dbgov_service();
+     ++session->diag.draw_queries;
+     HdTextureDrawQuery query{};
+     if (!make_query(tp, cx, cy, limits, window, query)) return 0;
+@@ -633,3 +664,39 @@ extern "C" void gpu_hd_textures_observe_draw(uint16_t tp, uint16_t cx, uint16_t
+         ++session->diag.draw_queries; dump_query(query, semi);
+     }
+ }
++
++/* Debug overlay (render thread, where draws are matched): what replaces one
++ * draw, or why nothing does; and what the pack currently tracks. */
++extern "C" int gpu_hd_textures_describe(uint16_t tp, uint16_t cx, uint16_t cy, const int limits[4],
++                                        uint32_t window, int semi, char* out, size_t cap) {
++    if (!out || !cap) return 0;
++    out[0] = '\0';
++    if (!session || !session->duck) { std::snprintf(out, cap, "no DuckStation texture pack"); return 1; }
++    HdTextureDrawQuery query{};
++    if (!make_query(tp, cx, cy, limits, window, query)) { std::snprintf(out, cap, "draw has no pack query"); return 1; }
++    std::array<DuckTextureMatch, 4> matches{};
++    size_t count = 0;
++    const int status = duck_texture_pack_match_parts(session->duck, &query, semi, matches.data(), matches.size(), &count);
++    if (status == HD_TEXTURE_LOOKUP_FOUND && count) {
++        int n = 0;
++        for (size_t i = 0; i < count && n >= 0 && size_t(n) < cap; ++i) {
++            const char* path = matches[i].replacement_path ? matches[i].replacement_path : "?";
++            const char* rel = std::strstr(path, "/replacements/");
++            n += std::snprintf(out + n, cap - n, "%sHD %s", i ? "\n" : "", rel ? rel + 14 : path);
++        }
++        return 1;
++    }
++    char why[384];
++    duck_texture_pack_explain(session->duck, &query, why, sizeof why);
++    std::snprintf(out, cap, "SD (%s)\n%s", status == HD_TEXTURE_LOOKUP_ERROR ? "lookup error" : "no replacement", why);
++    return 1;
++}
++extern "C" int gpu_hd_textures_tracking_summary(char* out, size_t cap) {
++    if (!out || !cap) return 0;
++    out[0] = '\0';
++    if (!session || !session->duck) return 0;
++    char text[512];
++    duck_texture_pack_tracking_summary(session->duck, text, sizeof text);
++    std::snprintf(out, cap, "%s\nresets %llu, last: %s", text, (unsigned long long)s_reset_count, s_reset_reason);
++    return 1;
++}
+diff --git a/runtime/src/gpu_render.c b/runtime/src/gpu_render.c
+index 812de65..87d37ad 100644
+--- a/runtime/src/gpu_render.c
++++ b/runtime/src/gpu_render.c
+@@ -14,6 +14,7 @@
+ #include "gpu_sw_renderer.h"
+ #include "gpu_hd_textures.h"
+ #include "gpu_uv.h"
++#include "psx_debug_overlay.h"
+ #include <stdio.h>
+ 
+ static const GpuRenderBackend SW_BACKEND = {
+@@ -79,6 +80,20 @@ static void hd_observe_triangle(int x0,int y0,int u0,int v0,int x1,int y1,int u1
+     else psx_uv_tri_limits(xs,ys,us,vs,limits);
+     gpu_hd_textures_observe_draw(tp,cx,cy,limits,g_hd_texture_window,g_hd_semi);
+ }
++static void dbgov_triangle(int x0,int y0,int u0,int v0,int x1,int y1,int u1,int v1,
++    int x2,int y2,int u2,int v2,uint16_t cx,uint16_t cy,uint16_t tp) {
++    if (!psx_dbgov_wants_draws()) return;
++    int limits[4], xs[3]={x0,x1,x2},ys[3]={y0,y1,y2},us[3]={u0,u1,u2},vs[3]={v0,v1,v2};
++    if (g_hd_perspective) psx_uv_tri_world_limits(us,vs,limits);
++    else psx_uv_tri_limits(xs,ys,us,vs,limits);
++    psx_dbgov_note_draw(xs,ys,3,limits,cx,cy,tp,g_hd_texture_window,g_hd_semi);
++}
++static void dbgov_rect(int x,int y,int w,int h,int u0,int v0,int u1,int v1,uint16_t cx,uint16_t cy,uint16_t tp) {
++    if (!psx_dbgov_wants_draws() || w <= 0 || h <= 0) return;
++    int limits[4], xs[2]={x,x+w}, ys[2]={y,y+h};
++    psx_uv_rect_limits(u0,v0,u1,v1,limits);
++    psx_dbgov_note_draw(xs,ys,2,limits,cx,cy,tp,g_hd_texture_window,g_hd_semi);
++}
+ static void hd_observe_rect(int u0,int v0,int u1,int v1,uint16_t cx,uint16_t cy,uint16_t tp) {
+     if (g_effective == GR_BACKEND_OPENGL || !gpu_hd_textures_dump_enabled()) return;
+     if (g_effective == GR_BACKEND_VULKAN) g_b->vram_read(0,0);
+@@ -212,6 +227,7 @@ void gr_draw_textured_triangle(int x0, int y0, int u0, int v0, int x1, int y1, i
+                                int x2, int y2, int u2, int v2,
+                                uint16_t clut_x, uint16_t clut_y, uint16_t texpage) {
+     hd_observe_triangle(x0,y0,u0,v0,x1,y1,u1,v1,x2,y2,u2,v2,clut_x,clut_y,texpage);
++    dbgov_triangle(x0,y0,u0,v0,x1,y1,u1,v1,x2,y2,u2,v2,clut_x,clut_y,texpage);
+     g_b->draw_textured_triangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2,
+                                 clut_x, clut_y, texpage);
+     hd_invalidate_triangle(x0, y0, x1, y1, x2, y2);
+@@ -223,6 +239,7 @@ void gr_draw_shaded_textured_triangle(int x0, int y0, int u0, int v0, uint32_t c
+                                       uint16_t clut_x, uint16_t clut_y,
+                                       uint16_t texpage, int raw) {
+     hd_observe_triangle(x0,y0,u0,v0,x1,y1,u1,v1,x2,y2,u2,v2,clut_x,clut_y,texpage);
++    dbgov_triangle(x0,y0,u0,v0,x1,y1,u1,v1,x2,y2,u2,v2,clut_x,clut_y,texpage);
+     g_b->draw_shaded_textured_triangle(x0, y0, u0, v0, c0, x1, y1, u1, v1, c1,
+                                        x2, y2, u2, v2, c2, clut_x, clut_y, texpage, raw);
+     hd_invalidate_triangle(x0, y0, x1, y1, x2, y2);
+@@ -232,12 +249,14 @@ void gr_draw_flat_rect(int x, int y, int w, int h, uint16_t c) { g_b->draw_flat_
+ void gr_draw_textured_rect(int x, int y, int w, int h, int u, int v,
+                            uint16_t clut_x, uint16_t clut_y, uint16_t texpage) {
+     hd_observe_rect(u,v,u+w,v+h,clut_x,clut_y,texpage);
++    dbgov_rect(x,y,w,h,u,v,u+w,v+h,clut_x,clut_y,texpage);
+     g_b->draw_textured_rect(x, y, w, h, u, v, clut_x, clut_y, texpage);
+     if (w > 0 && h > 0) hd_invalidate_draw(x,y,x+w-1,y+h-1);
+ }
+ void gr_draw_textured_rect_scaled(int x, int y, int w, int h, int u0, int v0, int u1, int v1,
+                                   uint16_t clut_x, uint16_t clut_y, uint16_t texpage) {
+     hd_observe_rect(u0,v0,u1,v1,clut_x,clut_y,texpage);
++    dbgov_rect(x,y,w,h,u0,v0,u1,v1,clut_x,clut_y,texpage);
+     g_b->draw_textured_rect_scaled(x, y, w, h, u0, v0, u1, v1, clut_x, clut_y, texpage);
+     if (w > 0 && h > 0) hd_invalidate_draw(x,y,x+w-1,y+h-1);
+ }
+diff --git a/runtime/src/host_keymap.c b/runtime/src/host_keymap.c
+index 39afb3d..12e6851 100644
+--- a/runtime/src/host_keymap.c
++++ b/runtime/src/host_keymap.c
+@@ -112,6 +112,10 @@ static void apply_defaults(void) {
+         add_bind(HOST_KEYMAP_TURBO_TOGGLE, (int)SDLK_F9, (int)SDL_SCANCODE_F9, 0);
+     if (want_default(HOST_KEYMAP_CAPTURE_MARK))
+         add_bind(HOST_KEYMAP_CAPTURE_MARK, (int)SDLK_m, (int)SDL_SCANCODE_M, KMOD_CTRL);
++    if (want_default(HOST_KEYMAP_DEBUG_STATS))
++        add_bind(HOST_KEYMAP_DEBUG_STATS, (int)SDLK_F3, (int)SDL_SCANCODE_F3, 0);
++    if (want_default(HOST_KEYMAP_DEBUG_INSPECT))
++        add_bind(HOST_KEYMAP_DEBUG_INSPECT, (int)SDLK_F4, (int)SDL_SCANCODE_F4, 0);
+ }
+ 
+ /* Parse one "Ctrl+Alt+PageUp" token into key+mods. */
+@@ -172,6 +176,8 @@ static HostKeymapAction action_for_key(const char *name) {
+     if (ieq(name, "Scanlines")) return HOST_KEYMAP_SCANLINES;
+     if (ieq(name, "TurboToggle")) return HOST_KEYMAP_TURBO_TOGGLE;
+     if (ieq(name, "CaptureMark")) return HOST_KEYMAP_CAPTURE_MARK;
++    if (ieq(name, "DebugStats")) return HOST_KEYMAP_DEBUG_STATS;
++    if (ieq(name, "DebugInspect")) return HOST_KEYMAP_DEBUG_INSPECT;
+     return HOST_KEYMAP_ACTION_COUNT;
+ }
+ 
+diff --git a/runtime/src/host_osd.c b/runtime/src/host_osd.c
+index 7a662b7..a4a4348 100644
+--- a/runtime/src/host_osd.c
++++ b/runtime/src/host_osd.c
+@@ -175,6 +175,11 @@ static int          s_sdl_ssm_th;
+ static SDL_Renderer *s_sdl_ren;
+ #endif
+ 
++const uint8_t *host_osd_glyph(int ch) {
++    if (ch < 32 || ch > 126) ch = '?';
++    return FONT8X8[ch - 32];
++}
++
+ static int clamp_pct(int p) {
+     if (p < 0) return 0;
+     if (p > 100) return 100;
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index cf33df2..fa447c1 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -36,6 +36,7 @@
+ #include "savestate.h"
+ #include "psx_rewind.h"
+ #include "psx_savestate_menu.h"
++#include "psx_debug_overlay.h"
+ #include "host_osd.h"
+ #include "local_mouse_sdl.h"
+ #include "pad_external_input.h"
+@@ -8156,9 +8157,29 @@ static void headless_present_image_ring_capture(void) {
+ static int debug_toggles_on(void);
+ static int debug_toggle_key(int key, char *out, int cap);
+ #endif
++/* F4 inspector: the pointer in drawable pixels; a left click freezes the
++ * selection and is not passed on to the emulated mouse. */
++static bool debug_overlay_mouse_event(const SDL_Event& ev) {
++    if (!psx_dbgov_inspect_active() || !sdl_window) return false;
++    if (ev.type != SDL_MOUSEMOTION && ev.type != SDL_MOUSEBUTTONDOWN) return false;
++    int win_w = 0, win_h = 0, draw_w = 0, draw_h = 0;
++    SDL_GetWindowSize(sdl_window, &win_w, &win_h);
++    SDL_GL_GetDrawableSize(sdl_window, &draw_w, &draw_h);
++    const double sx = win_w > 0 && draw_w > 0 ? (double)draw_w / win_w : 1.0;
++    const double sy = win_h > 0 && draw_h > 0 ? (double)draw_h / win_h : 1.0;
++    if (ev.type == SDL_MOUSEMOTION) {
++        psx_dbgov_mouse_motion((int)(ev.motion.x * sx), (int)(ev.motion.y * sy));
++        return false;
++    }
++    if (ev.button.button != SDL_BUTTON_LEFT) return false;
++    psx_dbgov_mouse_motion((int)(ev.button.x * sx), (int)(ev.button.y * sy));
++    psx_dbgov_mouse_click();
++    return true;
++}
+ static bool drain_host_events() {
+     SDL_Event ev;
+     while (SDL_PollEvent(&ev)) {
++        if (debug_overlay_mouse_event(ev)) continue;
+         if (psx_local_mouse_event(ev)) continue;
+         if (ev.type == SDL_QUIT) {
+             if (psx_netplay_active()) {
+@@ -8229,6 +8250,18 @@ static bool drain_host_events() {
+                                              (int)mod)) {
+                 fast_forward_toggle_flip();
+             }
++            else if (!key_repeat &&
++                     host_keymap_match_event(HOST_KEYMAP_DEBUG_STATS,
++                                             (int)key, (int)scancode,
++                                             (int)mod)) {
++                psx_dbgov_toggle_stats();
++            }
++            else if (!key_repeat &&
++                     host_keymap_match_event(HOST_KEYMAP_DEBUG_INSPECT,
++                                             (int)key, (int)scancode,
++                                             (int)mod)) {
++                psx_dbgov_toggle_inspect();
++            }
+             else if (!key_repeat &&
+                      host_keymap_match_event(HOST_KEYMAP_CAPTURE_MARK,
+                                              (int)key, (int)scancode,
+@@ -8345,6 +8378,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+     int override_p2 = -1;
+ #endif
+ 
++    psx_dbgov_frame_end();
+     psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+     {
+         /* Outside every debug guard on purpose: production must be measurable. */
+diff --git a/runtime/src/psx_debug_overlay.c b/runtime/src/psx_debug_overlay.c
+new file mode 100644
+index 0000000..2aadcd8
+--- /dev/null
++++ b/runtime/src/psx_debug_overlay.c
+@@ -0,0 +1,538 @@
++/* psx_debug_overlay.c — F3 statistics and F4 object inspector.
++ *
++ * The emulation thread records the textured draws of each guest frame while
++ * the inspector is on, picks the topmost one under the mouse and builds the
++ * panel image. HD texture questions are answered on the thread that matches
++ * draws (the GL render thread when it runs): it takes the pending request at
++ * the next present, so the pack is never touched from two threads. */
++#include "psx_debug_overlay.h"
++#include "gpu_hd_textures.h"
++#include "host_osd.h"
++#include "psx_sdl.h"
++
++#include <stdio.h>
++#include <string.h>
++#if defined(__linux__)
++#include <time.h>
++#include <dirent.h>
++#endif
++
++#define MAX_DRAWS     8192
++#define PANEL_COLS    80
++#define PANEL_LINES   30
++#define GLYPH         8
++#define LINE_H        10
++#define PAD           4
++#define REFRESH_MS    500
++
++typedef struct {
++    int16_t x[4], y[4];
++    uint8_t n, semi;
++    int16_t limits[4];
++    uint16_t clut_x, clut_y, texpage;
++    uint32_t window;
++} Draw;
++
++static int s_stats, s_inspect, s_frozen;
++static int s_mouse_x = -1, s_mouse_y = -1;
++static int s_direct, s_direct_x, s_direct_y;   /* debug server without a window */
++
++/* Draws of the frame being built and of the last finished one. */
++static Draw s_draws[2][MAX_DRAWS];
++static int s_count[2], s_cur;
++static uint64_t s_frame_draws;
++
++/* Selected draw (in the finished frame) and its answer. */
++static int s_sel_valid, s_ptr_valid, s_ptr_x, s_ptr_y;
++static Draw s_sel;
++
++static SDL_mutex *s_lock;
++static struct {
++    int disp_x, disp_y, disp_w, disp_h, lx, ly, lw, lh, ww, wh, valid;
++} s_geo;
++static struct {
++    unsigned request, answered;
++    Draw draw;
++} s_ask;
++/* Recent answers by texture, so a selection that alternates between a few
++ * textures (two buffered frames, animation) keeps showing them. */
++#define ANSWERS 8
++static struct { int valid; Draw key; char text[512]; } s_answers[ANSWERS];
++static int s_answer_next;
++static char s_tracking[640];
++static uint64_t s_presents, s_services;
++static double s_render_cpu_pct;
++
++/* Panel */
++static uint32_t s_img[(PANEL_LINES * LINE_H + 2 * PAD) * (PANEL_COLS * GLYPH + 2 * PAD)];
++static int s_img_w, s_img_h, s_img_valid;
++static char s_lines[PANEL_LINES][PANEL_COLS + 1];
++static int s_nlines;
++
++/* Statistics window */
++static uint64_t s_win_start, s_last_frame;
++static uint64_t s_win_frames, s_win_max_ns, s_win_draws, s_win_presents;
++static double s_emu_cpu0, s_proc_cpu0;
++static GpuHdTextureDiag s_diag0;
++static char s_stat_lines[12][PANEL_COLS + 1];
++static int s_nstat;
++
++static int contains(const Draw *d, int px, int py);
++static void bbox(const Draw *d, int *x0, int *y0, int *x1, int *y1);
++
++static void lock(void) {
++    if (!s_lock) s_lock = SDL_CreateMutex();
++    if (s_lock) SDL_LockMutex(s_lock);
++}
++static void unlock(void) { if (s_lock) SDL_UnlockMutex(s_lock); }
++
++static uint64_t now_ns(void) {
++    const uint64_t f = SDL_GetPerformanceFrequency();
++    const uint64_t c = SDL_GetPerformanceCounter();
++    return f ? (uint64_t)((double)c * 1e9 / (double)f) : 0;
++}
++
++#if defined(__linux__)
++static double cpu_seconds(clockid_t id) {
++    struct timespec t;
++    if (clock_gettime(id, &t) != 0) return 0.0;
++    return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
++}
++static int read_int_file(const char *path, long *out) {
++    FILE *f = fopen(path, "r");
++    if (!f) return 0;
++    const int ok = fscanf(f, "%ld", out) == 1;
++    fclose(f);
++    return ok;
++}
++static long rss_mb(void) {
++    long pages = 0, resident = 0;
++    FILE *f = fopen("/proc/self/statm", "r");
++    if (!f) return -1;
++    const int ok = fscanf(f, "%ld %ld", &pages, &resident) == 2;
++    fclose(f);
++    return ok ? resident * 4096 / (1024 * 1024) : -1;
++}
++/* First DRM device that reports a busy percentage (amdgpu does). */
++static long gpu_busy_pct(void) {
++    static char path[96];
++    static int searched;
++    long v = -1;
++    if (!searched) {
++        searched = 1;
++        for (int i = 0; i < 8 && !path[0]; i++) {
++            char p[96];
++            snprintf(p, sizeof p, "/sys/class/drm/card%d/device/gpu_busy_percent", i);
++            if (read_int_file(p, &v)) snprintf(path, sizeof path, "%s", p);
++        }
++    }
++    if (!path[0] || !read_int_file(path, &v)) return -1;
++    return v;
++}
++#endif
++
++void psx_dbgov_toggle_stats(void) {
++    s_stats = !s_stats;
++    s_win_start = 0;
++    s_nstat = 0;
++    host_osd_push(s_stats ? "Debug stats on (F3)" : "Debug stats off", 1200);
++}
++void psx_dbgov_toggle_inspect(void) {
++    s_inspect = !s_inspect;
++    s_frozen = 0;
++    s_sel_valid = 0;
++    s_count[0] = s_count[1] = 0;
++    host_osd_push(s_inspect ? "Inspector on (F4): mouse over an object, click to freeze"
++                            : "Inspector off", 2000);
++}
++int psx_dbgov_inspect_active(void) { return s_inspect; }
++void psx_dbgov_mouse_motion(int x, int y) { s_mouse_x = x; s_mouse_y = y; s_direct = 0; }
++void psx_dbgov_mouse_click(void) { if (s_inspect) s_frozen = !s_frozen; }
++
++void psx_dbgov_set_modes(int stats, int inspect, int frozen) {
++    if (stats >= 0 && (stats != 0) != (s_stats != 0)) psx_dbgov_toggle_stats();
++    if (inspect >= 0 && (inspect != 0) != (s_inspect != 0)) psx_dbgov_toggle_inspect();
++    if (frozen >= 0 && s_inspect) s_frozen = frozen != 0;
++}
++void psx_dbgov_point_guest(int gx, int gy) {
++    lock();
++    s_direct = !s_geo.valid;
++    s_direct_x = gx; s_direct_y = gy;
++    if (s_geo.valid) {
++        const int top = s_geo.wh - s_geo.ly - s_geo.lh;
++        s_mouse_x = s_geo.lx + (2 * gx + 1) * s_geo.lw / (2 * s_geo.disp_w);
++        s_mouse_y = top + (2 * gy + 1) * s_geo.lh / (2 * s_geo.disp_h);
++    }
++    unlock();
++}
++int psx_dbgov_panel_text(char *out, int cap) {
++    int n = 0;
++    if (!out || cap <= 0) return 0;
++    out[0] = '\0';
++    for (int i = 0; i < s_nlines && n < cap; i++)
++        n += snprintf(out + n, (size_t)(cap - n), "%s%s", i ? "\n" : "", s_lines[i]);
++    return n;
++}
++
++int psx_dbgov_draws_near(int gx, int gy, char *out, int cap) {
++    int n = 0;
++    const int done = s_cur ^ 1;
++    if (!out || cap <= 0) return 0;
++    out[0] = '\0';
++    for (int i = 0; i < s_count[done] && n < cap - 96; i++) {
++        int x0, y0, x1, y1;
++        bbox(&s_draws[done][i], &x0, &y0, &x1, &y1);
++        if (gx < x0 - 4 || gx > x1 + 4 || gy < y0 - 4 || gy > y1 + 4) continue;
++        const Draw *d = &s_draws[done][i];
++        n += snprintf(out + n, (size_t)(cap - n), "#%d n%d bbox %d,%d-%d,%d in %d tp %04X\n", i, d->n,
++                      x0, y0, x1, y1, contains(d, gx, gy), d->texpage);
++    }
++    return n;
++}
++
++int psx_dbgov_wants_draws(void) { return s_stats || (s_inspect && !s_frozen); }
++
++void psx_dbgov_note_draw(const int *xs, const int *ys, int vertices, const int limits[4],
++                         uint16_t clut_x, uint16_t clut_y, uint16_t texpage,
++                         uint32_t texture_window, int semitransparent) {
++    s_frame_draws++;
++    if (!s_inspect || s_frozen || s_count[s_cur] >= MAX_DRAWS) return;
++    Draw *d = &s_draws[s_cur][s_count[s_cur]++];
++    d->n = (uint8_t)(vertices > 4 ? 4 : vertices);
++    for (int i = 0; i < d->n; i++) { d->x[i] = (int16_t)xs[i]; d->y[i] = (int16_t)ys[i]; }
++    for (int i = 0; i < 4; i++) d->limits[i] = (int16_t)limits[i];
++    d->clut_x = clut_x; d->clut_y = clut_y; d->texpage = texpage;
++    d->window = texture_window; d->semi = (uint8_t)(semitransparent != 0);
++}
++
++/* Same texture question: page, palette, sampled texels, window, blending. */
++static int same_texture(const Draw *a, const Draw *b) {
++    return a->texpage == b->texpage && a->clut_x == b->clut_x && a->clut_y == b->clut_y &&
++           a->window == b->window && a->semi == b->semi &&
++           !memcmp(a->limits, b->limits, sizeof a->limits);
++}
++
++static int edge(int ax, int ay, int bx, int by, int px, int py) {
++    return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
++}
++static int contains(const Draw *d, int px, int py) {
++    if (d->n == 2) {    /* rectangle: corners */
++        return px >= d->x[0] && px < d->x[1] && py >= d->y[0] && py < d->y[1];
++    }
++    const int e0 = edge(d->x[0], d->y[0], d->x[1], d->y[1], px, py);
++    const int e1 = edge(d->x[1], d->y[1], d->x[2], d->y[2], px, py);
++    const int e2 = edge(d->x[2], d->y[2], d->x[0], d->y[0], px, py);
++    return (e0 >= 0 && e1 >= 0 && e2 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0);
++}
++static void bbox(const Draw *d, int *x0, int *y0, int *x1, int *y1) {
++    *x0 = *x1 = d->x[0]; *y0 = *y1 = d->y[0];
++    for (int i = 1; i < d->n; i++) {
++        if (d->x[i] < *x0) *x0 = d->x[i];
++        if (d->x[i] > *x1) *x1 = d->x[i];
++        if (d->y[i] < *y0) *y0 = d->y[i];
++        if (d->y[i] > *y1) *y1 = d->y[i];
++    }
++}
++
++/* Mouse (drawable pixels) to display-relative guest pixels. */
++static int mouse_to_guest(int *gx, int *gy) {
++    int ok = 0;
++    if (s_direct) { *gx = s_direct_x; *gy = s_direct_y; return 1; }
++    lock();
++    if (s_geo.valid && s_geo.lw > 0 && s_geo.lh > 0 && s_mouse_x >= 0) {
++        const int top = s_geo.wh - s_geo.ly - s_geo.lh;  /* GL viewport is bottom-left */
++        const int mx = s_mouse_x - s_geo.lx, my = s_mouse_y - top;
++        if (mx >= 0 && my >= 0 && mx < s_geo.lw && my < s_geo.lh) {
++            *gx = mx * s_geo.disp_w / s_geo.lw;
++            *gy = my * s_geo.disp_h / s_geo.lh;
++            ok = 1;
++        }
++    }
++    unlock();
++    return ok;
++}
++
++/* Caller holds the lock. */
++static const char *answer_for(const Draw *d) {
++    for (int k = 1; k <= ANSWERS; k++) {
++        const int i = (s_answer_next - k + ANSWERS) % ANSWERS;
++        if (s_answers[i].valid && same_texture(&s_answers[i].key, d)) return s_answers[i].text;
++    }
++    return NULL;
++}
++
++static void select_draw(void) {
++    int gx, gy;
++    const int done = s_cur ^ 1;
++    if (s_frozen) return;
++    s_ptr_valid = mouse_to_guest(&gx, &gy);
++    s_ptr_x = gx; s_ptr_y = gy;
++    if (!s_ptr_valid) { s_sel_valid = 0; return; }
++    s_sel_valid = 0;
++    for (int i = s_count[done] - 1; i >= 0; i--)
++        if (contains(&s_draws[done][i], gx, gy)) { s_sel = s_draws[done][i]; s_sel_valid = 1; break; }
++    if (!s_sel_valid) return;
++    lock();
++    if (!same_texture(&s_ask.draw, &s_sel) && !answer_for(&s_sel)) {
++        s_ask.draw = s_sel;
++        s_ask.request++;
++    }
++    unlock();
++}
++
++static void add_line(const char *fmt, const char *text) {
++    /* Split on newlines; long lines are cut at the panel width. */
++    char buf[1024];
++    snprintf(buf, sizeof buf, fmt, text);
++    char *p = buf;
++    while (p && s_nlines < PANEL_LINES) {
++        char *nl = strchr(p, '\n');
++        if (nl) *nl = '\0';
++        /* Wrap long lines (file paths); continuation lines are indented. */
++        size_t len = strlen(p), at = 0;
++        do {
++            const int indent = at ? 2 : 0;
++            const size_t take = len - at < (size_t)(PANEL_COLS - indent) ? len - at : (size_t)(PANEL_COLS - indent);
++            snprintf(s_lines[s_nlines++], PANEL_COLS + 1, "%*s%.*s", indent, "", (int)take, p + at);
++            at += take;
++        } while (at < len && s_nlines < PANEL_LINES);
++        p = nl ? nl + 1 : NULL;
++    }
++}
++
++static void update_stats(void) {
++    const uint64_t t = now_ns();
++    if (!s_win_start) {
++        s_win_start = t;
++        s_win_frames = s_win_max_ns = s_win_draws = 0;
++        lock(); s_win_presents = s_presents; unlock();
++#if defined(__linux__)
++        s_emu_cpu0 = cpu_seconds(CLOCK_THREAD_CPUTIME_ID);
++        s_proc_cpu0 = cpu_seconds(CLOCK_PROCESS_CPUTIME_ID);
++#endif
++        gpu_hd_textures_get_diag(&s_diag0);
++        return;
++    }
++    if (t - s_win_start < (uint64_t)REFRESH_MS * 1000000u || !s_win_frames) return;
++    const double secs = (double)(t - s_win_start) * 1e-9;
++    uint64_t presents;
++    double render_pct;
++    char tracking[640];
++    lock();
++    presents = s_presents - s_win_presents;
++    s_win_presents = s_presents;
++    render_pct = s_render_cpu_pct;
++    snprintf(tracking, sizeof tracking, "%s", s_tracking);
++    unlock();
++    GpuHdTextureDiag d;
++    gpu_hd_textures_get_diag(&d);
++    const double frames = (double)s_win_frames;
++    const uint64_t q = d.draw_queries - s_diag0.draw_queries;
++    const uint64_t m = d.matched_draws - s_diag0.matched_draws;
++    const uint64_t a = d.applied_draws - s_diag0.applied_draws;
++    s_nstat = 0;
++    snprintf(s_stat_lines[s_nstat++], PANEL_COLS + 1, "Game %.1f fps  frame %.1f ms (max %.1f)  Display %.1f fps",
++             frames / secs, secs * 1000.0 / frames, (double)s_win_max_ns * 1e-6, (double)presents / secs);
++#if defined(__linux__)
++    const double emu = cpu_seconds(CLOCK_THREAD_CPUTIME_ID), proc = cpu_seconds(CLOCK_PROCESS_CPUTIME_ID);
++    const long gpu = gpu_busy_pct(), ram = rss_mb();
++    snprintf(s_stat_lines[s_nstat++], PANEL_COLS + 1, "CPU emu %.0f%%  render %.0f%%  process %.0f%% of a core",
++             100.0 * (emu - s_emu_cpu0) / secs, render_pct, 100.0 * (proc - s_proc_cpu0) / secs);
++    char gpu_text[16];
++    if (gpu >= 0) snprintf(gpu_text, sizeof gpu_text, "%ld%%", gpu);
++    else snprintf(gpu_text, sizeof gpu_text, "n/a");
++    snprintf(s_stat_lines[s_nstat++], PANEL_COLS + 1, "GPU busy %s  RAM %ld MB", gpu_text, ram);
++    s_emu_cpu0 = emu; s_proc_cpu0 = proc;
++#else
++    (void)render_pct;
++    snprintf(s_stat_lines[s_nstat++], PANEL_COLS + 1, "CPU/GPU/RAM: Linux only");
++#endif
++    snprintf(s_stat_lines[s_nstat++], PANEL_COLS + 1, "Draws %.0f/frame  HD queries %.0f  matched %.0f%%  applied %.0f",
++             (double)s_win_draws / frames, (double)q / frames, q ? 100.0 * (double)m / (double)q : 0.0,
++             (double)a / frames);
++    char *p = tracking;
++    while (p && *p && s_nstat < 12) {
++        char *nl = strchr(p, '\n');
++        if (nl) *nl = '\0';
++        snprintf(s_stat_lines[s_nstat++], PANEL_COLS + 1, "%s", p);
++        p = nl ? nl + 1 : NULL;
++    }
++    s_diag0 = d;
++    s_win_start = t;
++    s_win_frames = s_win_max_ns = s_win_draws = 0;
++}
++
++static void describe_draw(const Draw *d, char *out, size_t cap) {
++    int x0, y0, x1, y1;
++    bbox(d, &x0, &y0, &x1, &y1);
++    const unsigned tp = d->texpage;
++    const int depth = (int)((tp >> 7) & 3u);
++    const int page_x = (int)(tp & 0xFu) * 64, page_y = (int)((tp >> 4) & 1u) * 256;
++    static const char *const bits[] = { "4-bit", "8-bit", "15-bit", "?" };
++    snprintf(out, cap,
++             "%s at %d,%d size %dx%d%s\n"
++             "page %d,%d %s  clut %u,%u\n"
++             "uv %d..%d, %d..%d",
++             d->n == 2 ? "Sprite" : "Triangle", x0, y0, x1 - x0, y1 - y0,
++             d->semi ? "  semi-transparent" : "",
++             page_x, page_y, bits[depth], d->clut_x, d->clut_y,
++             d->limits[0], d->limits[2], d->limits[1], d->limits[3]);
++}
++
++static void build_panel(void) {
++    s_nlines = 0;
++    if (s_stats) {
++        for (int i = 0; i < s_nstat; i++) add_line("%s", s_stat_lines[i]);
++        if (!s_nstat) add_line("%s", "measuring...");
++    }
++    if (s_inspect) {
++        if (s_stats) add_line("%s", "");
++        char head[96];
++        if (s_ptr_valid)
++            snprintf(head, sizeof head, "Inspector at %d,%d, %d draws%s", s_ptr_x, s_ptr_y, s_count[s_cur ^ 1],
++                     s_frozen ? " (frozen, click)" : " (click to freeze)");
++        else
++            snprintf(head, sizeof head, "Inspector: pointer outside the picture");
++        add_line("%s", head);
++        if (!s_sel_valid) add_line("%s", "no textured object under the mouse");
++        else {
++            char text[256], answer[512];
++            describe_draw(&s_sel, text, sizeof text);
++            add_line("%s", text);
++            lock();
++            const char *known = answer_for(&s_sel);
++            snprintf(answer, sizeof answer, "%s", known ? known : "asking the texture pack...");
++            unlock();
++            add_line("%s", answer);
++        }
++    }
++    int cols = 0;
++    for (int i = 0; i < s_nlines; i++) {
++        const int len = (int)strlen(s_lines[i]);
++        if (len > cols) cols = len;
++    }
++    if (!s_nlines) { s_img_valid = 0; return; }
++    s_img_w = cols * GLYPH + 2 * PAD;
++    s_img_h = s_nlines * LINE_H + 2 * PAD;
++    for (int i = 0; i < s_img_w * s_img_h; i++) s_img[i] = 0xFF101418u;
++    for (int l = 0; l < s_nlines; l++) {
++        const int hd = !strncmp(s_lines[l], "HD ", 3), sd = !strncmp(s_lines[l], "SD ", 3);
++        const uint32_t ink = hd ? 0xFF60FF60u : sd ? 0xFFFF7060u : 0xFFE8E8E8u;
++        for (int c = 0; s_lines[l][c]; c++) {
++            const uint8_t *g = host_osd_glyph((unsigned char)s_lines[l][c]);
++            for (int row = 0; row < GLYPH; row++)
++                for (int col = 0; col < GLYPH; col++)
++                    if (g[row] & (1u << col))
++                        s_img[(PAD + l * LINE_H + row) * s_img_w + PAD + c * GLYPH + col] = ink;
++        }
++    }
++    s_img_valid = 1;
++}
++
++void psx_dbgov_frame_end(void) {
++    if (!s_stats && !s_inspect) { s_img_valid = 0; s_frame_draws = 0; return; }
++    const uint64_t t = now_ns();
++    if (s_last_frame && t - s_last_frame > s_win_max_ns) s_win_max_ns = t - s_last_frame;
++    s_last_frame = t;
++    s_win_frames++;
++    s_win_draws += s_frame_draws;
++    s_frame_draws = 0;
++    /* The game does not draw a new picture every vblank: keep the last
++     * picture until the next one has draws. */
++    if (s_inspect && !s_frozen && s_count[s_cur] > 0) {
++        s_cur ^= 1;
++        s_count[s_cur] = 0;
++    }
++    if (s_inspect) select_draw();
++    if (s_stats) update_stats();
++    build_panel();
++}
++
++void psx_dbgov_set_present_geometry(int disp_x, int disp_y, int disp_w, int disp_h,
++                                    int lx, int ly, int lw, int lh, int ww, int wh) {
++    if (!s_stats && !s_inspect) return;
++    lock();
++    s_geo.disp_x = disp_x; s_geo.disp_y = disp_y; s_geo.disp_w = disp_w; s_geo.disp_h = disp_h;
++    s_geo.lx = lx; s_geo.ly = ly; s_geo.lw = lw; s_geo.lh = lh; s_geo.ww = ww; s_geo.wh = wh;
++    s_geo.valid = disp_w > 0 && disp_h > 0;
++    unlock();
++}
++
++void psx_dbgov_render_tick(void) {
++    if (!s_stats && !s_inspect) return;
++    lock();
++    s_presents++;
++    unlock();
++    psx_dbgov_service();
++}
++
++void psx_dbgov_service(void) {
++    static uint64_t last_summary, cpu_t0;
++    static double cpu0;
++    if (!s_stats && !s_inspect) return;
++    lock();
++    s_services++;
++    const int pending = s_ask.request != s_ask.answered;
++    Draw d = s_ask.draw;
++    const unsigned request = s_ask.request;
++    unlock();
++    if (pending) {
++        char text[512];
++        const int limits[4] = { d.limits[0], d.limits[1], d.limits[2], d.limits[3] };
++        if (!gpu_hd_textures_describe(d.texpage, d.clut_x, d.clut_y, limits, d.window, d.semi,
++                                      text, sizeof text) || !text[0])
++            snprintf(text, sizeof text, "HD textures inactive");
++        lock();
++        s_answers[s_answer_next].valid = 1;
++        s_answers[s_answer_next].key = d;
++        snprintf(s_answers[s_answer_next].text, sizeof s_answers[0].text, "%s", text);
++        s_answer_next = (s_answer_next + 1) % ANSWERS;
++        s_ask.answered = request;
++        unlock();
++    }
++    const uint64_t t = now_ns();
++    if (t - last_summary >= (uint64_t)REFRESH_MS * 1000000u) {
++        char text[640];
++        if (!gpu_hd_textures_tracking_summary(text, sizeof text)) snprintf(text, sizeof text, "HD textures inactive");
++#if defined(__linux__)
++        const double c = cpu_seconds(CLOCK_THREAD_CPUTIME_ID);
++        const double pct = cpu_t0 ? 100.0 * (c - cpu0) / ((double)(t - cpu_t0) * 1e-9) : 0.0;
++        cpu0 = c; cpu_t0 = t;
++#else
++        const double pct = 0.0;
++#endif
++        lock();
++        snprintf(s_tracking, sizeof s_tracking, "%s", text);
++        s_render_cpu_pct = pct;
++        unlock();
++        last_summary = t;
++    }
++}
++
++int psx_dbgov_needs_present(void) { return s_img_valid; }
++
++int psx_dbgov_overlay_image(const uint32_t **pixels, int *w, int *h) {
++    if (!s_img_valid) { *pixels = NULL; *w = *h = 0; return 0; }
++    *pixels = s_img; *w = s_img_w; *h = s_img_h;
++    return 1;
++}
++
++int psx_dbgov_highlight(int *x, int *y, int *w, int *h, uint32_t *argb) {
++    if (!s_inspect || !s_sel_valid) return 0;
++    int x0, y0, x1, y1, ok = 0;
++    bbox(&s_sel, &x0, &y0, &x1, &y1);
++    lock();
++    if (s_geo.valid) {
++        const int top = s_geo.wh - s_geo.ly - s_geo.lh;
++        *x = s_geo.lx + x0 * s_geo.lw / s_geo.disp_w;
++        *y = top + y0 * s_geo.lh / s_geo.disp_h;
++        *w = (x1 - x0) * s_geo.lw / s_geo.disp_w;
++        *h = (y1 - y0) * s_geo.lh / s_geo.disp_h;
++        ok = *w > 0 && *h > 0;
++    }
++    const char *known = answer_for(&s_sel);
++    const int hd = known && !strncmp(known, "HD ", 3);
++    unlock();
++    *argb = hd ? 0xFF40FF40u : 0xFFFF4040u;
++    return ok;
++}
+-- 
+2.56.0
+

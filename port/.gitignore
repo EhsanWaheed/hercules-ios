@@ -90,3 +90,6 @@ starvation_dump.jsonl
 
 # launcher artwork cut from the game (launcher/build_assets.py) -- never commit
 /launcher/web/assets/
+
+# game art, made locally (never commit)
+/launcher/icon.png

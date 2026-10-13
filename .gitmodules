@@ -1,0 +1,4 @@
+[submodule "port/psxrecomp"]
+	path = port/psxrecomp
+	url = https://github.com/RetroPortingToolKit/psxrecomp
+	branch = master
