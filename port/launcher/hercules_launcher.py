@@ -435,6 +435,9 @@ def write_settings(build, cfg):
     for k in AUDIO_KEYS:
         audio[k] = cfg[k]
     doc.setdefault("launcher", {})["skip_launcher"] = True
+    # Player 1 on the first gamepad (release builds default to the keyboard);
+    # PSX_P1_KEYBOARD_TOO (game_env) keeps the keyboard working too.
+    doc.setdefault("controller", {})["p1_device"] = "auto"
     write_atomic(path, toml_dumps(doc))
 
 
@@ -447,6 +450,7 @@ def game_env(cfg, slot):
         env.pop(k, None)
     if slot is not None:
         env["PSX_LOAD_SLOT"] = str(slot)
+    env["PSX_P1_KEYBOARD_TOO"] = "1"
     env["PSX_CRT"] = "1" if cfg["crt_sim"] else "0"
     env["PSX_CRT_MASK"] = str(cfg["crt_mask"])
     env["PSX_CRT_BLOOM"] = str(cfg["crt_bloom"])
