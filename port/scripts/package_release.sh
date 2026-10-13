@@ -49,7 +49,7 @@ for _doc in DISC.md; do
 done
 
 cd "${ROOT}"
-exec bash "${PACKAGER}" \
+bash "${PACKAGER}" \
   --root "${ROOT}" \
   --build-dir "${BUILD_DIR}" \
   --artifact "${ARTIFACT_TAG}" \
@@ -60,3 +60,29 @@ exec bash "${PACKAGER}" \
   --version-env RELEASE_VERSION \
   --disc-hint "your legally owned Hercules disc" \
   "${EXTRA[@]}"
+
+# The launcher's automatic HD build (hd/hd_auto.py) and the decomp tools it
+# runs: the HD pack is made from the player's disc on the player's PC.
+DECOMP_TOOLS=""
+for d in "${HERC_DECOMP:-}" "${ROOT}/../decomp" "${ROOT}/../hercules"; do
+  if [[ -n "$d" && -f "$d/tools/hd_pack_build.py" ]]; then DECOMP_TOOLS="$d/tools"; break; fi
+done
+if [[ -z "${DECOMP_TOOLS}" ]]; then
+  echo "error: decomp tools not found (set HERC_DECOMP)" >&2
+  exit 1
+fi
+ZIP="${ROOT}/dist/hercules-${RELEASE_VERSION:-$(cat "${ROOT}/VERSION")}-${ARTIFACT_TAG}.zip"
+python3 - "${ZIP}" "${ROOT}/hd/hd_auto.py" "${DECOMP_TOOLS}" <<'PY'
+import sys, zipfile
+from pathlib import Path
+zip_path, auto, tools = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+# hd_pack_build.py and everything it starts or imports
+TOOLS = ["hd_pack_build.py", "iso_extract.py", "sprites.py", "cut_textures.py", "level_models.py",
+         "level_models_tex.py", "level_vram.py", "fullscreen2png.py", "hud_texpack.py", "upscale_model.py",
+         "sprite_palettize.py", "sprite_cells.py", "sprite_texpack.py", "level_texpack.py", "xxh3.py"]
+with zipfile.ZipFile(zip_path, "a", zipfile.ZIP_DEFLATED) as z:
+    z.write(auto, "hd/hd_auto.py")
+    for t in TOOLS:
+        z.write(tools / t, f"hd/tools/{t}")
+print(f"added hd/ ({len(TOOLS)} tools) to {zip_path}")
+PY

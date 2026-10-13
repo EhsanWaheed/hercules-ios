@@ -27,6 +27,12 @@
 #include "hl_strings.h"
 #include "psx_game_launcher.h"
 
+#ifdef _WIN32
+extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId(void);
+#else
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace hl {
@@ -248,6 +254,47 @@ fs::path pack_for(const Ctx& c) {
     return variant;
 }
 
+// ------------------------------------------------------------- HD build
+// The HD pack is made on the player's PC from their disc: hd/hd_auto.py in
+// the Python that ships for the overlay toolchain fetches what it needs and
+// runs the decomp's hd_pack_build.py. It starts by itself after the first
+// game, runs at low priority while the launcher (or the game it started) is
+// open, stops with the launcher and continues on the next start.
+struct HdStatus { std::string state, phase, error; double fraction = 0; long eta = -1; };
+
+fs::path hd_data(const Ctx& c) { return c.exe_dir / "hd-build"; }
+bool hd_pack_ready(const Ctx& c) { return fs::is_directory(pack_base(c) / "replacements"); }
+fs::path hd_python(const Ctx& c) {
+#ifdef _WIN32
+    return c.exe_dir / "overlay_toolchain" / "python" / "pythonw.exe";     // no console window
+#else
+    return c.exe_dir / "overlay_toolchain" / "python" / "bin" / "python3";
+#endif
+}
+
+// hd-build/progress.json: {"phase": "build", "fraction": 0.35, "eta": 5195, "state": "running", "error": null}
+HdStatus hd_read(const Ctx& c) {
+    HdStatus st;
+    const std::string j = read_text(hd_data(c) / "progress.json");
+    auto field = [&](const char* key) -> std::string {
+        const size_t k = j.find(std::string("\"") + key + "\":");
+        if (k == std::string::npos) return "";
+        size_t v = j.find_first_not_of(' ', k + std::strlen(key) + 3);
+        if (v == std::string::npos) return "";
+        if (j[v] == '"') { const size_t e = j.find('"', v + 1); return e == std::string::npos ? "" : j.substr(v + 1, e - v - 1); }
+        const size_t e = j.find_first_of(",}", v);
+        const std::string raw = trim(j.substr(v, e - v));
+        return raw == "null" ? "" : raw;
+    };
+    st.state = field("state");
+    st.phase = field("phase");
+    st.error = field("error");
+    st.fraction = std::atof(field("fraction").c_str());
+    const std::string eta = field("eta");
+    st.eta = eta.empty() ? -1 : std::atol(eta.c_str());
+    return st;
+}
+
 // ------------------------------------------------- settings.toml / mods
 void write_settings(const Ctx& c) {
     const fs::path path = c.exe_dir / "settings.toml";
@@ -467,6 +514,10 @@ struct App {
     uint64_t t0 = 0;
     SDL_Gamepad* pad = nullptr;
     Key pad_prev = Key::None;
+    SDL_Process* hd_proc = nullptr;
+    HdStatus hd;
+    uint64_t hd_polled = 0;
+    bool hd_gave_up = false;            // failed or impossible this session; the next start retries
 
     // ---------------------------------------------------------- drawing
     SDL_Texture* texture(const Image& img) {
@@ -590,6 +641,15 @@ struct App {
     }
     void play(int slot);
     void run();
+
+    // ---------------------------------------------------------- HD build
+    bool hd_wanted() const { return ctx.store.get("hd_auto") != "false"; }
+    void hd_start();
+    void hd_stop();
+    void hd_tick();
+    std::string hd_label();
+    void hd_toggle();
+    void hd_line(float y);
 };
 
 // ================================================================ screens
@@ -638,6 +698,7 @@ void MainMenu::render(App& a) {
         if (a.lang() == "de" && it != a.art.level_name.end()) a.centered(it->second, 6);
         else a.text_block(a.level_name(lv), W / 2.0f, -5, "yellow", 300);
     }
+    a.hd_line(225);
 }
 void MainMenu::key(App& a, Key k) {
     if (k == Key::Up) sel = (sel + 3) % 4;
@@ -723,7 +784,7 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
                    {"fullscreen", {{"0", "window"}, {"1", "full"}, {"2", "exclusive"}}},
                    {"vsync", {{"on", "on"}, {"adaptive", "adaptive"}, {"vrr", "=VRR"}, {"off", "off"}}},
                    {"preset", {{"original", "p_original"}, {"hd", "p_hd"}, {"custom", "p_custom"}}}}},
-        {"gfx", {{"hd_sprites", kOnOff}, {"hd_levels", kOnOff}, {"hd_hud", kOnOff},
+        {"gfx", {{"hd_build", {}}, {"hd_sprites", kOnOff}, {"hd_levels", kOnOff}, {"hd_hud", kOnOff},
                  {"texture_filtering", {{"nearest", "sharp"}, {"bilinear", "soft"}, {"xbr", "=XBR"}}},
                  {"antialiasing", kOnOff}, {"perspective_texturing", kOnOff}, {"geometry_correction", kOnOff}}},
         {"filter", {{"crt_sim", kOnOff}, {"crt_mask", pct({0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1})},
@@ -773,8 +834,8 @@ void OptionsScreen::render(App& a) {
         const bool active = row == int(i) + 1;
         a.text(a.T("opt." + rows[i].key), 20, y, active ? "blue" : "yellow");
         const auto& ch = rows[i].choices;
-        a.text(choice_label(a, ch[choice_index(current(a, rows[i].key), ch)].second), 300, y,
-               active ? "blue" : "orange", "right");
+        a.text(rows[i].key == "hd_build" ? a.hd_label() : choice_label(a, ch[choice_index(current(a, rows[i].key), ch)].second),
+               300, y, active ? "blue" : "orange", "right");
         a.hit(14, y + 4, 292, 18, [this, i] { row = int(i) + 1; }, [this, &a, i] { row = int(i) + 1; step(a, 1); });
     }
     a.caption("back_help", "help_back", 234);
@@ -783,6 +844,7 @@ void OptionsScreen::step(App& a, int d) {
     const auto ps = pages();
     if (row == 0) { page = (page + d + int(ps.size())) % int(ps.size()); return; }
     const Row& r = ps[page].second[row - 1];
+    if (r.key == "hd_build") { a.hd_toggle(); return; }
     const int n = int(r.choices.size());
     const std::string nv = r.choices[(choice_index(current(a, r.key), r.choices) + d + n) % n].first;
     if (r.key == "preset") {
@@ -915,7 +977,105 @@ void App::play(int slot) {
     SDL_ShowWindow(win);
     SDL_RaiseWindow(win);
     refresh_states();
+    if (hd_wanted() && !ctx.store.b("hd_started")) set("hd_started", "true");   // HD build starts now
     if (code) show_message(T("err.exit", {{"n", std::to_string(code)}}));
+}
+
+// ------------------------------------------------------------ HD build
+void App::hd_start() {
+    const fs::path py = hd_python(ctx), script = ctx.exe_dir / "hd" / "hd_auto.py";
+    if (hd_proc || ctx.disc.empty() || !fs::exists(py) || !fs::exists(script)) { hd_gave_up = true; return; }
+#ifdef _WIN32
+    const std::string pid = std::to_string(GetCurrentProcessId());
+#else
+    const std::string pid = std::to_string(getpid());
+#endif
+    const std::string a_py = py.u8string(), a_script = script.u8string(), a_disc = ctx.disc.u8string(),
+                      a_pack = pack_base(ctx).u8string(), a_data = hd_data(ctx).u8string();
+    const char* args[] = {a_py.c_str(), a_script.c_str(), "--disc", a_disc.c_str(), "--pack", a_pack.c_str(),
+                          "--data", a_data.c_str(), "--parent-pid", pid.c_str(), nullptr};
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)args);
+    const std::string cwd = ctx.exe_dir.u8string();
+    SDL_SetStringProperty(props, SDL_PROP_PROCESS_CREATE_WORKING_DIRECTORY_STRING, cwd.c_str());
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+    hd_proc = SDL_CreateProcessWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (!hd_proc) hd_gave_up = true;
+    hd_polled = 0;
+}
+
+void App::hd_stop() {
+    if (!hd_proc) return;
+    SDL_KillProcess(hd_proc, false);           // it stops its own steps; images made so far stay
+    SDL_WaitProcess(hd_proc, true, nullptr);
+    SDL_DestroyProcess(hd_proc);
+    hd_proc = nullptr;
+    hd = hd_read(ctx);
+}
+
+void App::hd_tick() {
+    const uint64_t now = SDL_GetTicks();
+    if (hd_polled && now - hd_polled < 1000) return;
+    hd_polled = now;
+    if (hd_proc) {
+        int code = 0;
+        if (!SDL_WaitProcess(hd_proc, false, &code)) { hd = hd_read(ctx); return; }
+        SDL_DestroyProcess(hd_proc);
+        hd_proc = nullptr;
+        hd = hd_read(ctx);
+        if (hd.state == "done" && hd_pack_ready(ctx)) {
+            show_message(T("hd_done"));
+        } else {
+            hd_gave_up = true;
+            if (hd.state == "failed")
+                show_message(T(hd.error == "network" || hd.error == "disk" ? "hd_err_" + hd.error : "hd_err_failed"));
+        }
+        return;
+    }
+    if (!hd_gave_up && hd_wanted() && ctx.store.b("hd_started") && !hd_pack_ready(ctx)) hd_start();
+}
+
+std::string App::hd_label() {
+    const std::string p = std::to_string(int(hd.fraction * 100));
+    if (hd_pack_ready(ctx) && !hd_proc) return T("val.hd_ready");
+    if (hd_proc) return p + " %";
+    if (!fs::exists(ctx.exe_dir / "hd" / "hd_auto.py")) return T("val.hd_unavailable");
+    if (!hd.state.empty()) return T("val.hd_paused", {{"p", p}});
+    return T("val.hd_make");
+}
+
+void App::hd_toggle() {
+    if (hd_proc) { hd_stop(); set("hd_auto", "false"); return; }
+    if (hd_pack_ready(ctx)) return;
+    set("hd_auto", "true");
+    set("hd_started", "true");
+    hd_gave_up = false;
+    hd_start();
+}
+
+// bottom of the main menu while the pack is being made
+void App::hd_line(float y) {
+    if (!hd_proc) return;
+    const int p = int(hd.fraction * 100);
+    std::string msg;
+    if (hd.phase == "build" && hd.eta >= 0) {
+        const long m = std::max(1L, std::lround(hd.eta / 60.0));
+        char eta[32];
+        if (m < 60) std::snprintf(eta, sizeof eta, "%ld MIN", m);
+        else std::snprintf(eta, sizeof eta, "%ld:%02ld H", m / 60, m % 60);
+        msg = T("hd_progress", {{"p", std::to_string(p)}, {"eta", eta}});
+    } else {
+        msg = T("hd_setup", {{"p", std::to_string(p)}});
+    }
+    text(msg, W / 2.0f, y, "yellow", "center");
+    const float bw = 200, bx = (W - bw) / 2, by = y + 24;
+    rect(bx - 1, by - 1, bw + 2, 6, {107, 58, 26, 255});
+    rect(bx, by, bw, 4, {20, 8, 4, 220});
+    rect(bx, by, bw * float(hd.fraction), 4, {255, 208, 56, 255});
 }
 
 Key key_of(SDL_Keycode k) {
@@ -1031,6 +1191,7 @@ void App::run() {
         }
         pad_prev = pk;
         if (quit) break;
+        hd_tick();
 
         // draw the stage at 4x, then fit it into the window as 4:3
         hits.clear();
@@ -1176,7 +1337,9 @@ int launcher_main(int argc, char** argv) {
     SDL_JoystickID* pads = SDL_GetGamepads(&npads);
     if (pads && npads > 0) app.pad = SDL_OpenGamepad(pads[0]);
     SDL_free(pads);
+    app.hd = hd_read(c);
     app.run();
+    app.hd_stop();
     for (auto& [img, t] : app.tex) SDL_DestroyTexture(t);
     SDL_DestroyTexture(app.stage);
     SDL_DestroyRenderer(app.ren);
