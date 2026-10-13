@@ -1,0 +1,80 @@
+/* Hercules launcher: one 4:3 game stage, 320 x 256 logical pixels (the PAL
+   resolution of the game's own title art), scaled as a single unit. */
+:root {
+  --oxblood: #340907;
+  --letterbox: #100907;
+  --menu-yellow: #ffd038;
+  --menu-blue: #8cb9f3;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--letterbox);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+/* The stage keeps 4:3 at any window size; the scene inside is 320 x 256
+   logical pixels stretched to it like a PAL picture on a TV. */
+.stage {
+  position: relative;
+  width: min(100vw, calc(100vh * 4 / 3));
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: var(--oxblood);
+  isolation: isolate;
+}
+.scene {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 320px;
+  height: 256px;
+  transform-origin: 0 0;
+}
+.scene img, .scene canvas {
+  position: absolute;
+  image-rendering: pixelated;
+  -webkit-user-drag: none;
+}
+.scene .bg { left: 0; top: 0; width: 320px; height: 256px; }
+.scene .beams { mix-blend-mode: screen; opacity: 0.85; }
+.scene .hit { position: absolute; cursor: pointer; }
+.scene .fresco-frame {
+  position: absolute;
+  background: #170e0c;
+  box-shadow: 0 0 0 1px #6b3a1a, 0 0 0 2px #170e0c;
+}
+.scene .thumb-frame {
+  position: absolute;
+  background: #170e0c;
+  box-shadow: 0 0 0 1px #8cb9f3, 0 0 0 2px #170e0c;
+}
+.scene .thumb-frame.off { box-shadow: 0 0 0 1px #6b3a1a, 0 0 0 2px #170e0c; opacity: 0.55; }
+.scene .dim { position: absolute; inset: 0; background: rgba(16, 4, 3, 0.62); }
+
+/* faint film grain and vignette over everything */
+.grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+  background:
+    radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 0.45) 100%);
+}
+
+.missing {
+  position: fixed;
+  inset: auto 0 2rem 0;
+  text-align: center;
+  color: #ffd038;
+  font: 16px/1.5 monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scene * { animation: none !important; }
+}

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hercules Recompiled</title>
+<link rel="stylesheet" href="launcher.css">
+</head>
+<body>
+<main class="stage" id="stage" aria-live="polite">
+  <div class="scene" id="scene" role="application" aria-label="Hercules Launcher"></div>
+  <div class="grain" aria-hidden="true"></div>
+</main>
+<div class="missing" id="missing" hidden>
+  Die Grafiken des Launchers fehlen.<br>
+  <code>~/psx-decomp/.venv/bin/python launcher/build_assets.py</code>
+</div>
+<script src="assets/manifest.js" onerror="document.getElementById('missing').hidden = false"></script>
+<script src="launcher.js"></script>
+</body>
+</html>

@@ -857,15 +857,182 @@ class Launcher(Adw.Application):
         return False
 
 
+class WebLauncher(Gtk.Application):
+    """The launcher as a 4:3 game-menu stage (launcher/web, WebKitGTK).
+
+    The page sends JSON commands through the "herc" message handler; replies
+    go back through window.hercBridge.reply(id, data). Settings, mods and the
+    game start are the same functions the classic window uses."""
+
+    def __init__(self, build):
+        super().__init__(application_id="de.obaid.HerculesLauncher",
+                         flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.build = build
+        self.exe = build / EXE_NAME
+        self.store_path = build / "launcher.json"
+        try:
+            self.store = json.loads(self.store_path.read_text())
+        except (OSError, ValueError):
+            self.store = {}
+        self.cfg = dict(DEFAULTS, **self.store.get("settings", {}))
+        self.names = self.store.get("slot_names", {})
+        self.game = None
+
+    def save_store(self):
+        self.store.update(settings=self.cfg, slot_names=self.names)
+        write_atomic(self.store_path, json.dumps(self.store, indent=2, ensure_ascii=False))
+
+    def preset(self):
+        for key in ("original", "hd"):
+            if all(self.cfg.get(k) == v for k, v in PRESETS[key].items()):
+                return key
+        return "custom"
+
+    def state(self):
+        import base64
+        states = []
+        for st in sorted(list_states(), key=lambda s: -s.mtime):
+            n = self.names.get(str(st.slot))
+            name = n.get("name") if n and abs(n.get("mtime", 0) - st.mtime) < 1 else ""
+            thumb = ""
+            if st.thumb is not None:
+                png = st.thumb.save_to_png_bytes().get_data()
+                thumb = "data:image/png;base64," + base64.b64encode(png).decode()
+            states.append({"slot": st.slot, "name": name, "thumb": thumb,
+                           "when": time.strftime("%d.%m.%Y %H:%M", time.localtime(st.mtime))})
+        return {"cfg": self.cfg, "preset": self.preset(), "states": states,
+                "exe_ok": self.exe.exists()}
+
+    # -- window
+    def do_activate(self):
+        gi.require_version("WebKit", "6.0")
+        from gi.repository import WebKit
+        self.win = Gtk.ApplicationWindow(application=self, title="Hercules Recompiled",
+                                         default_width=1024, default_height=768)
+        self.view = WebKit.WebView()
+        settings = self.view.get_settings()
+        settings.set_allow_file_access_from_file_urls(True)
+        settings.set_enable_developer_extras("HERC_LAUNCHER_DEVTOOLS" in os.environ)
+        rgba = Gdk.RGBA()
+        rgba.parse("#100907")
+        self.view.set_background_color(rgba)
+        ucm = self.view.get_user_content_manager()
+        ucm.register_script_message_handler("herc", None)
+        ucm.connect("script-message-received::herc", self.on_message)
+        self.view.load_uri((Path(__file__).resolve().parent / "web/index.html").as_uri())
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)   # before the web view
+        keys.connect("key-pressed", self.on_key)
+        self.win.add_controller(keys)
+        self.win.set_child(self.view)
+        self.win.present()
+
+    def on_key(self, _ctrl, keyval, _code, _state):
+        if keyval == Gdk.KEY_F11:
+            if self.win.is_fullscreen():
+                self.win.unfullscreen()
+            else:
+                self.win.fullscreen()
+            return True
+        return False
+
+    def js(self, script):
+        self.view.evaluate_javascript(script, -1, None, None, None, None, None)
+
+    def reply(self, msg_id, data):
+        self.js(f"window.hercBridge.reply({int(msg_id)}, {json.dumps(data, ensure_ascii=False)});")
+
+    def on_message(self, _ucm, value):
+        try:
+            msg = json.loads(value.to_string())
+        except (ValueError, AttributeError):
+            return
+        cmd, args, mid = msg.get("cmd"), msg.get("args") or {}, msg.get("id", 0)
+        if cmd == "state":
+            self.reply(mid, self.state())
+        elif cmd == "set":
+            key = args.get("key")
+            if key in DEFAULTS:
+                self.cfg[key] = args.get("value")
+                self.save_store()
+            self.reply(mid, {"ok": True})
+        elif cmd == "preset":
+            if args.get("name") in PRESETS:
+                self.cfg.update(PRESETS[args["name"]])
+                self.save_store()
+            self.reply(mid, {"ok": True, "state": self.state()})
+        elif cmd == "delete":
+            slot = int(args.get("slot", -1))
+            if 0 <= slot < SLOTS:
+                for ext in ("pst", "thumb", "hdres"):
+                    slot_path(slot, ext).unlink(missing_ok=True)
+                self.names.pop(str(slot), None)
+                self.save_store()
+            self.reply(mid, {"ok": True})
+        elif cmd == "play":
+            self.reply(mid, self.play(args.get("slot")))
+        elif cmd == "quit":
+            self.quit()
+
+    # -- game
+    def play(self, slot):
+        if self.game is not None:
+            return {"ok": False, "error": "Das Spiel läuft schon"}
+        if not self.exe.exists():
+            return {"ok": False, "error": "Spiel nicht gebaut"}
+        parts = chosen_parts(self.cfg)
+        if variant_stale(self.build, parts):
+            try:
+                build_variant(self.build, parts)
+            except (OSError, subprocess.CalledProcessError) as e:
+                return {"ok": False, "error": f"HD Pack {e}"}
+        pack = pack_for(self.build, parts)
+        if pack is not None and not (pack / "replacements").is_dir():
+            pack = None
+        write_settings(self.build, self.cfg)
+        write_mod_state(self.build, pack, self.cfg["start_level"] if slot is None else "off",
+                        widescreen=self.cfg["aspect_ratio"] == "16:9")
+        log = open(self.build / "launcher_last_run.log", "w")
+        try:
+            self.game = subprocess.Popen([str(self.exe), "--no-launcher"], cwd=self.build,
+                                         env=game_env(self.cfg, slot), stdout=log,
+                                         stderr=subprocess.STDOUT)
+        except OSError as e:
+            log.close()
+            return {"ok": False, "error": f"Start fehlgeschlagen {e}"}
+        self.win.set_visible(False)
+
+        def wait():
+            code = self.game.wait()
+            log.close()
+            GLib.idle_add(self.after_game, code)
+        threading.Thread(target=wait, daemon=True).start()
+        return {"ok": True}
+
+    def after_game(self, code):
+        self.game = None
+        self.win.set_visible(True)
+        self.win.present()
+        self.js(f"window.hercBridge.event('game_ended', {json.dumps({'code': code})});")
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="Hercules Recompiled launcher")
     ap.add_argument("--build", default="build-release",
                     help="build folder with Hercules_Recompiled (default build-release)")
+    ap.add_argument("--classic", action="store_true",
+                    help="the GTK settings window instead of the game-menu stage")
     args, rest = ap.parse_known_args()
     build = Path(args.build)
     if not build.is_absolute():
         build = ROOT / build
-    sys.exit(Launcher(build.resolve()).run([sys.argv[0]] + rest))
+    web = Path(__file__).resolve().parent / "web/assets/manifest.js"
+    if not args.classic and not web.exists():
+        print("launcher artwork missing: run launcher/build_assets.py (falling back to --classic)",
+              file=sys.stderr)
+    app = (Launcher if args.classic or not web.exists() else WebLauncher)(build.resolve())
+    sys.exit(app.run([sys.argv[0]] + rest))
 
 
 if __name__ == "__main__":

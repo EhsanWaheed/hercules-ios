@@ -87,3 +87,6 @@ starvation_dump.jsonl
 !/catalog_identity.json
 !/disc_probe.json
 !/.recomp.json
+
+# launcher artwork cut from the game (launcher/build_assets.py) -- never commit
+/launcher/web/assets/
