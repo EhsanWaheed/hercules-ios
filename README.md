@@ -37,7 +37,7 @@ WebKitGTK 6.0.
 ```sh
 git clone --recursive https://github.com/obaidr1/hercules-recompiled
 cd hercules-recompiled/port
-git -C psxrecomp apply ../patches/psxrecomp/*.patch
+cd psxrecomp && git apply ../patches/psxrecomp/*.patch && cd ..
 mkdir -p disc   # copy your dump here, Redump names:
                 # "Disneys Hercules Action-Spiel (Germany).cue" + ".bin"
 ./psxrecomp/tools/ci/build_emitters.sh
