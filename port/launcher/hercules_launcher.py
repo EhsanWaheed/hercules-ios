@@ -79,6 +79,7 @@ DEFAULTS = {
     "hd_hud": True, "start_level": "off",
     "crt_sim": False, "crt_mask": 0.5, "crt_bloom": 0.35,
     "skip_intro": True, "skip_memcard": True,   # boot straight to LADEN / title menu
+    "hd_prompted": False,      # the first-start question about building the HD pack was answered
     "language": None,          # launcher texts; None = from the system locale (de, en, fr, es, it)
 }
 LANGUAGES = ("de", "en", "fr", "es", "it")
@@ -211,6 +212,99 @@ def is_state_file(path):
 
 # ------------------------------------------------------------------ HD pack
 PACK_PARTS = (("sprites", "hd_sprites"), ("levels", "hd_levels"), ("hud", "hd_hud"))
+
+
+# --------------------------------------------------- HD pack from the disc
+# The HD art is never shipped: decomp/tools/hd_pack_build.py makes it from
+# the player's own disc (hours on a CPU). The launcher starts it as its own
+# process (it survives closing the launcher) and shows its progress file.
+def decomp_dir():
+    for d in (os.environ.get("HERC_DECOMP"), ROOT.parent / "decomp", Path.home() / "psx-decomp/hercules"):
+        if d and (Path(d) / "tools/hd_pack_build.py").exists():
+            return Path(d)
+    return None
+
+
+def hd_paths(build):
+    work = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "hercules-recompiled/hd-work"
+    return {"work": work, "progress": work / "progress.json", "pid": work / "build.pid",
+            "log": work / "build.log", "pack": build / "mods" / "texture-packs" / GAME_ID,
+            "models": Path(os.environ.get("HERC_MODELS", Path.home() / "psx-decomp/models")),
+            "ml_python": Path(os.environ.get("HERC_ML_PYTHON",
+                                             Path.home() / ".config/chaiNNer/python/python/bin/python3.11"))}
+
+
+def disc_path(build):
+    try:
+        disc = read_toml(build / "game.toml").get("disc")
+    except (OSError, ValueError):
+        disc = None
+    return Path(disc) if disc else None
+
+
+def hd_running(paths):
+    try:
+        pid = int(paths["pid"].read_text())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def hd_status(build):
+    """{"pack", "running", "progress", "missing"} for the launcher page."""
+    paths = hd_paths(build)
+    pack = (paths["pack"] / "replacements").is_dir()
+    missing = []
+    if decomp_dir() is None:
+        missing.append("tools")
+    disc = disc_path(build)
+    if not disc or not disc.exists():
+        missing.append("disc")
+    from_models = ("IllustrationJaNai/4x_IllustrationJaNai_V1_DAT2_190k.pth",
+                   "Models/HDcube/4xHDCube4Compact.pth", "Models/HDcube/4xHDcube-Alpha.pth")
+    if not all((paths["models"] / m).exists() for m in from_models):
+        missing.append("models")
+    if not paths["ml_python"].exists():
+        missing.append("python")
+    progress = None
+    try:
+        progress = json.loads(paths["progress"].read_text())
+    except (OSError, ValueError):
+        pass
+    return {"pack": pack, "running": hd_running(paths) is not None, "progress": progress,
+            "missing": missing}
+
+
+def hd_start(build):
+    paths = hd_paths(build)
+    if hd_running(paths):
+        return {"ok": True}
+    st = hd_status(build)
+    if st["missing"]:
+        return {"ok": False, "error": "hd_missing", "missing": st["missing"]}
+    paths["work"].mkdir(parents=True, exist_ok=True)
+    tool = decomp_dir() / "tools/hd_pack_build.py"
+    py = Path.home() / "psx-decomp/.venv/bin/python"
+    py = py if py.exists() else Path(sys.executable)
+    log = open(paths["log"], "a")
+    proc = subprocess.Popen(
+        [str(py), str(tool), str(disc_path(build)), str(paths["work"]), "--install", str(paths["pack"]),
+         "--models", str(paths["models"]), "--ml-python", str(paths["ml_python"]),
+         "--progress", str(paths["progress"])],
+        stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+        env=dict(os.environ, OMP_NUM_THREADS=str(max(1, (os.cpu_count() or 2) - 1))))
+    paths["pid"].write_text(str(proc.pid))
+    return {"ok": True}
+
+
+def hd_cancel(build):
+    import signal
+    paths = hd_paths(build)
+    pid = hd_running(paths)
+    if pid:
+        os.killpg(pid, signal.SIGTERM)     # finished images stay; a restart continues
+    return {"ok": True}
 
 
 def chosen_parts(cfg):
@@ -929,7 +1023,7 @@ class WebLauncher(Gtk.Application):
                 thumb = "data:image/png;base64," + base64.b64encode(png).decode()
             states.append({"slot": st.slot, "name": name, "thumb": thumb, "mtime": st.mtime})
         return {"cfg": self.cfg, "preset": self.preset(), "states": states,
-                "exe_ok": self.exe.exists()}
+                "exe_ok": self.exe.exists(), "hd": hd_status(self.build)}
 
     # -- window
     def do_activate(self):
@@ -997,6 +1091,12 @@ class WebLauncher(Gtk.Application):
                 self.names.pop(str(slot), None)
                 self.save_store()
             self.reply(mid, {"ok": True})
+        elif cmd == "hd_status":
+            self.reply(mid, hd_status(self.build))
+        elif cmd == "hd_start":
+            self.reply(mid, hd_start(self.build))
+        elif cmd == "hd_cancel":
+            self.reply(mid, hd_cancel(self.build))
         elif cmd == "play":
             self.reply(mid, self.play(args.get("slot")))
         elif cmd == "quit":

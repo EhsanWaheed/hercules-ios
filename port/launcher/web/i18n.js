@@ -18,6 +18,8 @@ const STR = {
     help_load: "X LADEN   □ LÖSCHEN\n△ ZURÜCK",
     load_title: "SPIEL LADEN", empty: "KEINE SPIELSTÄNDE", slot: "PLATZ {n}", of: "{i} VON {n}",
     delete_q: "LÖSCHEN?", yes: "JA", no: "NEIN",
+    hd_title: "HD-GRAFIKEN", hd_body: "DIE HD-GRAFIKEN WERDEN AUS DEINER DISC ERSTELLT. DAS DAUERT ETWA 4 STUNDEN. DU KANNST WÄHRENDDESSEN IN ORIGINALGRAFIK SPIELEN.",
+    hd_yes: "ERSTELLEN", hd_later: "SPÄTER", hd_progress: "HD {p} %  NOCH {eta}", hd_missing: "ES FEHLT:",
     options: "OPTIONEN", page: "SEITE",
     prev_level: "Vorherige Ebene", next_level: "Nächste Ebene", start_here: "In dieser Ebene starten",
     save_label: "Spielstand",
@@ -32,6 +34,7 @@ const STR = {
     },
     opt: {
       language: "SPRACHE",
+      hd_build: "HD-GRAFIKEN",
       internal_resolution: "AUFLÖSUNG", aspect_ratio: "FORMAT", fullscreen: "ANZEIGE", vsync: "BILDSYNC",
       preset: "STIL", hd_sprites: "HD FIGUREN", hd_levels: "HD LANDSCHAFT", hd_hud: "HD ANZEIGEN",
       texture_filtering: "TEXTUREN", antialiasing: "GLÄTTEN", perspective_texturing: "PERSPEKTIVE",
@@ -44,6 +47,7 @@ const STR = {
       exclusive: "EXKLUSIV", adaptive: "ADAPTIV", p_original: "ALT", p_hd: "NEU UND HD", p_custom: "EIGENE",
       sharp: "SCHARF", soft: "WEICH", raw: "ROH", tube: "RÖHRE", high: "HOCH", normal: "NORMAL",
       show: "ZEIGEN", skip: "ÜBERSPRINGEN",
+      hd_ready: "FERTIG", hd_make: "ERSTELLEN", hd_paused: "PAUSE {p} %", hd_unavailable: "NICHT MÖGLICH",
     },
   },
   en: {
@@ -53,6 +57,8 @@ const STR = {
     help_load: "X LOAD   □ DELETE\n△ BACK",
     load_title: "LOAD GAME", empty: "NO SAVED GAMES", slot: "SLOT {n}", of: "{i} OF {n}",
     delete_q: "DELETE?", yes: "YES", no: "NO",
+    hd_title: "HD GRAPHICS", hd_body: "THE HD GRAPHICS ARE MADE FROM YOUR OWN DISC. THIS TAKES ABOUT 4 HOURS. YOU CAN PLAY WITH THE ORIGINAL GRAPHICS MEANWHILE.",
+    hd_yes: "CREATE", hd_later: "LATER", hd_progress: "HD {p} %  {eta} LEFT", hd_missing: "MISSING:",
     options: "OPTIONS", page: "PAGE",
     prev_level: "Previous level", next_level: "Next level", start_here: "Start in this level",
     save_label: "Saved game",
@@ -65,6 +71,7 @@ const STR = {
     pages: { general: "GENERAL", video: "DISPLAY", gfx: "GRAPHICS", filter: "FILTERS", sound: "SOUND" },
     opt: {
       language: "LANGUAGE",
+      hd_build: "HD GRAPHICS",
       internal_resolution: "RESOLUTION", aspect_ratio: "ASPECT", fullscreen: "MODE", vsync: "VSYNC",
       preset: "STYLE", hd_sprites: "HD CHARACTERS", hd_levels: "HD SCENERY", hd_hud: "HD DISPLAY",
       texture_filtering: "TEXTURES", antialiasing: "SMOOTHING", perspective_texturing: "PERSPECTIVE",
@@ -77,6 +84,7 @@ const STR = {
       exclusive: "EXCLUSIVE", adaptive: "ADAPTIVE", p_original: "CLASSIC", p_hd: "NEW AND HD", p_custom: "CUSTOM",
       sharp: "SHARP", soft: "SOFT", raw: "RAW", tube: "CRT", high: "HIGH", normal: "NORMAL",
       show: "SHOW", skip: "SKIP",
+      hd_ready: "READY", hd_make: "CREATE", hd_paused: "PAUSED {p} %", hd_unavailable: "UNAVAILABLE",
     },
   },
   fr: {
@@ -86,6 +94,8 @@ const STR = {
     help_load: "X CHARGER   □ SUPPRIMER\n△ RETOUR",
     load_title: "CHARGER UNE PARTIE", empty: "AUCUNE SAUVEGARDE", slot: "EMPLACEMENT {n}", of: "{i} SUR {n}",
     delete_q: "SUPPRIMER?", yes: "OUI", no: "NON",
+    hd_title: "GRAPHISMES HD", hd_body: "LES GRAPHISMES HD SONT CRÉÉS À PARTIR DE TON DISQUE. CELA PREND ENVIRON 4 HEURES. TU PEUX JOUER EN GRAPHISMES D'ORIGINE PENDANT CE TEMPS.",
+    hd_yes: "CRÉER", hd_later: "PLUS TARD", hd_progress: "HD {p} %  ENCORE {eta}", hd_missing: "IL MANQUE:",
     options: "OPTIONS", page: "PAGE",
     prev_level: "Niveau précédent", next_level: "Niveau suivant", start_here: "Commencer à ce niveau",
     save_label: "Sauvegarde",
@@ -98,6 +108,7 @@ const STR = {
     pages: { general: "GÉNÉRAL", video: "AFFICHAGE", gfx: "GRAPHISMES", filter: "FILTRES", sound: "SON" },
     opt: {
       language: "LANGUE",
+      hd_build: "GRAPHISMES HD",
       internal_resolution: "RÉSOLUTION", aspect_ratio: "FORMAT", fullscreen: "MODE", vsync: "SYNCHRO",
       preset: "STYLE", hd_sprites: "PERSONNAGES HD", hd_levels: "DÉCORS HD", hd_hud: "INTERFACE HD",
       texture_filtering: "TEXTURES", antialiasing: "LISSAGE", perspective_texturing: "PERSPECTIVE",
@@ -110,6 +121,7 @@ const STR = {
       exclusive: "EXCLUSIF", adaptive: "ADAPTATIF", p_original: "CLASSIQUE", p_hd: "NOUVEAU ET HD", p_custom: "PERSO",
       sharp: "NET", soft: "DOUX", raw: "BRUT", tube: "CATHODIQUE", high: "HAUTE", normal: "NORMALE",
       show: "AFFICHER", skip: "PASSER",
+      hd_ready: "PRÊTS", hd_make: "CRÉER", hd_paused: "PAUSE {p} %", hd_unavailable: "IMPOSSIBLE",
     },
   },
   es: {
@@ -119,6 +131,8 @@ const STR = {
     help_load: "X CARGAR   □ BORRAR\n△ VOLVER",
     load_title: "CARGAR PARTIDA", empty: "NO HAY PARTIDAS", slot: "RANURA {n}", of: "{i} DE {n}",
     delete_q: "¿BORRAR?", yes: "SÍ", no: "NO",
+    hd_title: "GRÁFICOS HD", hd_body: "LOS GRÁFICOS HD SE CREAN A PARTIR DE TU DISCO. TARDA UNAS 4 HORAS. MIENTRAS TANTO PUEDES JUGAR CON LOS GRÁFICOS ORIGINALES.",
+    hd_yes: "CREAR", hd_later: "MÁS TARDE", hd_progress: "HD {p} %  QUEDAN {eta}", hd_missing: "FALTA:",
     options: "OPCIONES", page: "PÁGINA",
     prev_level: "Nivel anterior", next_level: "Nivel siguiente", start_here: "Empezar en este nivel",
     save_label: "Partida",
@@ -131,6 +145,7 @@ const STR = {
     pages: { general: "GENERAL", video: "PANTALLA", gfx: "GRÁFICOS", filter: "FILTROS", sound: "SONIDO" },
     opt: {
       language: "IDIOMA",
+      hd_build: "GRÁFICOS HD",
       internal_resolution: "RESOLUCIÓN", aspect_ratio: "FORMATO", fullscreen: "MODO", vsync: "SINCRONÍA",
       preset: "ESTILO", hd_sprites: "PERSONAJES HD", hd_levels: "ESCENARIOS HD", hd_hud: "MARCADORES HD",
       texture_filtering: "TEXTURAS", antialiasing: "SUAVIZADO", perspective_texturing: "PERSPECTIVA",
@@ -143,6 +158,7 @@ const STR = {
       exclusive: "EXCLUSIVA", adaptive: "ADAPTATIVA", p_original: "CLÁSICO", p_hd: "NUEVO Y HD", p_custom: "PROPIO",
       sharp: "NÍTIDAS", soft: "SUAVES", raw: "PUROS", tube: "TUBO", high: "ALTA", normal: "NORMAL",
       show: "MOSTRAR", skip: "SALTAR",
+      hd_ready: "LISTOS", hd_make: "CREAR", hd_paused: "PAUSA {p} %", hd_unavailable: "NO DISPONIBLE",
     },
   },
   it: {
@@ -152,6 +168,8 @@ const STR = {
     help_load: "X CARICA   □ ELIMINA\n△ INDIETRO",
     load_title: "CARICA PARTITA", empty: "NESSUN SALVATAGGIO", slot: "SLOT {n}", of: "{i} DI {n}",
     delete_q: "ELIMINARE?", yes: "SÌ", no: "NO",
+    hd_title: "GRAFICA HD", hd_body: "LA GRAFICA HD VIENE CREATA DAL TUO DISCO. CI VOGLIONO CIRCA 4 ORE. NEL FRATTEMPO PUOI GIOCARE CON LA GRAFICA ORIGINALE.",
+    hd_yes: "CREA", hd_later: "PIÙ TARDI", hd_progress: "HD {p} %  ANCORA {eta}", hd_missing: "MANCA:",
     options: "OPZIONI", page: "PAGINA",
     prev_level: "Livello precedente", next_level: "Livello successivo", start_here: "Inizia da questo livello",
     save_label: "Salvataggio",
@@ -164,6 +182,7 @@ const STR = {
     pages: { general: "GENERALE", video: "SCHERMO", gfx: "GRAFICA", filter: "FILTRI", sound: "AUDIO" },
     opt: {
       language: "LINGUA",
+      hd_build: "GRAFICA HD",
       internal_resolution: "RISOLUZIONE", aspect_ratio: "FORMATO", fullscreen: "MODALITÀ", vsync: "VSYNC",
       preset: "STILE", hd_sprites: "PERSONAGGI HD", hd_levels: "SCENARI HD", hd_hud: "INDICATORI HD",
       texture_filtering: "TEXTURE", antialiasing: "SMUSSATURA", perspective_texturing: "PROSPETTIVA",
@@ -176,6 +195,7 @@ const STR = {
       exclusive: "ESCLUSIVO", adaptive: "ADATTIVO", p_original: "CLASSICO", p_hd: "NUOVO E HD", p_custom: "PERSONALE",
       sharp: "NITIDE", soft: "MORBIDE", raw: "PURI", tube: "CRT", high: "ALTA", normal: "NORMALE",
       show: "MOSTRA", skip: "SALTA",
+      hd_ready: "PRONTA", hd_make: "CREA", hd_paused: "PAUSA {p} %", hd_unavailable: "NON POSSIBILE",
     },
   },
 };

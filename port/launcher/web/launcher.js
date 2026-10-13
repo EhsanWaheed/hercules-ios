@@ -33,10 +33,18 @@ const bridge = (() => {
     states: [{ slot: 2, name: "", mtime: 1791830880, thumb: "" },
              { slot: 1, name: "LEVEL 2 ANFANG", mtime: 1791830820, thumb: "" }],
     selected_slot: null,
+    hd: { pack: false, running: false, progress: null, missing: [] },
   };
   function call(cmd, args = {}) {
     if (!native) {
       if (cmd === "state") return Promise.resolve(JSON.parse(JSON.stringify(demo)));
+      if (cmd === "hd_status") return Promise.resolve(JSON.parse(JSON.stringify(demo.hd)));
+      if (cmd === "hd_start") {
+        demo.hd = { pack: false, running: true, missing: [],
+                    progress: { fraction: 0.37, eta: 9000, state: "running", step: "upscale-sprites" } };
+        return Promise.resolve({ ok: true });
+      }
+      if (cmd === "hd_cancel") { demo.hd.running = false; return Promise.resolve({ ok: true }); }
       if (cmd === "set") { demo.cfg[args.key] = args.value; return Promise.resolve({ ok: true }); }
       if (cmd === "delete") { demo.states = demo.states.filter(s => s.slot !== args.slot); return Promise.resolve({ ok: true }); }
       return Promise.resolve({ ok: true, demo: true });
@@ -216,6 +224,7 @@ const mainMenu = {
       if (lang() === "de" && A.sprite.level_name[lv]) centered(A.sprite.level_name[lv], 6);
       else textBlock(levelName(lv), W / 2, -5, "yellow", 300);
     }
+    hdBar();
   },
   key(k) {
     if (k === "up") { this.sel = (this.sel + 3) % 4; render(); }
@@ -284,6 +293,7 @@ const pct = vs => vs.map(v => [v, "=" + Math.round(v * 100)]);
 const PAGES = [
   ["general", [
     ["language", LANGS.map(([k, n]) => [k, "=" + n])],
+    ["hd_build", null],
   ]],
   ["video", [
     ["internal_resolution", [["native", "native"], ["720p", "=720P"], ["1080p", "=1080P"], ["1440p", "=1440P"], ["4k", "=4K"]]],
@@ -343,6 +353,7 @@ const optionsScreen = {
     return S.cfg[key];
   },
   valueLabel(key, choices) {
+    if (key === "hd_build") return hdLabel();
     const v = this.current(key);
     let best = choices[0];
     for (const c of choices) if (c[0] === v) best = c;
@@ -356,6 +367,7 @@ const optionsScreen = {
       return render();
     }
     const [key, choices] = PAGES[this.page][1][this.row - 1];
+    if (key === "hd_build") return hdToggle();
     const v = this.current(key);
     let i = choices.findIndex(c => c[0] === v);
     if (i < 0) i = 0;
@@ -496,11 +508,93 @@ function pollPad() {
 }
 requestAnimationFrame(pollPad);
 
+/* ------------------------------------------- HD pack built from the disc */
+function hdPhase() {
+  const h = S.hd || {};
+  if (h.pack && !h.running) return "ready";
+  if (h.running) return "running";
+  if (h.progress && h.progress.state !== "done") return "paused";
+  return "none";
+}
+function fmtEta(sec) {
+  if (sec == null) return "…";
+  const m = Math.max(1, Math.round(sec / 60));
+  return m < 60 ? `${m} MIN` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")} H`;
+}
+function hdPercent() { return Math.floor(((S.hd.progress || {}).fraction || 0) * 100); }
+function hdLabel() {
+  const ph = hdPhase(), V = STR[lang()].val;
+  if (ph === "ready") return V.hd_ready;
+  if (ph === "running") return hdPercent() + " %";
+  if (ph === "paused") return V.hd_paused.replace("{p}", hdPercent());
+  return (S.hd.missing || []).length ? V.hd_unavailable : V.hd_make;
+}
+async function hdToggle() {
+  const ph = hdPhase();
+  if (ph === "running") await bridge.call("hd_cancel");
+  else if (ph !== "ready") {
+    const r = await bridge.call("hd_start");
+    if (r && !r.ok) showMessage(T("hd_missing") + " " + (r.missing || []).join(", ").toUpperCase());
+  }
+  S.hd = await bridge.call("hd_status");
+  render();
+}
+/* bottom line on the main menu while the pack is being made */
+function hdBar() {
+  const ph = hdPhase();
+  if (ph !== "running" && ph !== "paused") return;
+  const p = hdPercent(), w = 200, x = (W - w) / 2, y = 249;
+  const track = document.createElement("div");
+  Object.assign(track.style, { position: "absolute", left: x + "px", top: y + "px", width: w + "px",
+    height: "5px", background: "rgba(20,8,4,0.75)", boxShadow: "0 0 0 1px #6b3a1a" });
+  const fill = document.createElement("div");
+  Object.assign(fill.style, { width: p + "%", height: "100%", background: "#ffd038" });
+  track.appendChild(fill);
+  scene.appendChild(track);
+  const msg = ph === "running"
+    ? T("hd_progress", { p, eta: fmtEta((S.hd.progress || {}).eta) })
+    : STR[lang()].val.hd_paused.replace("{p}", p);
+  text(msg, W / 2, y - 24, "yellow", "center");
+}
+/* refresh the progress every few seconds without restarting the animations */
+setInterval(async () => {
+  if (!S || running || hdPhase() === "ready" && !(S.hd || {}).running) return;
+  const before = JSON.stringify(S.hd);
+  S.hd = await bridge.call("hd_status");
+  if (JSON.stringify(S.hd) !== before && (screen === mainMenu || screen === optionsScreen)) render();
+}, 5000);
+
+const hdPrompt = {
+  yes: true,
+  render() {
+    bg("plaster");
+    text(T("hd_title"), W / 2, 30, "yellow", "center");
+    textBlock(T("hd_body"), W / 2, 64, "orange", 280);
+    text(T("hd_yes"), 110, 186, this.yes ? "blue" : "yellow", "center");
+    text(T("hd_later"), 210, 186, this.yes ? "yellow" : "blue", "center");
+    hit(70, 190, 80, 20, () => { this.yes = true; render(); }, () => this.answer(true), T("hd_yes"));
+    hit(170, 190, 80, 20, () => { this.yes = false; render(); }, () => this.answer(false), T("hd_later"));
+  },
+  async answer(yes) {
+    await set("hd_prompted", true);
+    if (yes) await bridge.call("hd_start");
+    S.hd = await bridge.call("hd_status");
+    go(mainMenu, false);
+  },
+  key(k) {
+    if (k === "left" || k === "right") { this.yes = !this.yes; render(); }
+    else if (k === "ok") this.answer(this.yes);
+    else if (k === "back") this.answer(false);
+  },
+};
+
 /* ------------------------------------------------------------------- boot */
 (async () => {
   if (!A) return;
   S = await bridge.call("state");
-  screen = mainMenu;
+  const h = S.hd || {};
+  screen = !h.pack && !h.running && !h.progress && !S.cfg.hd_prompted && !(h.missing || []).length
+    ? hdPrompt : mainMenu;
   render();
   fit();
 })();

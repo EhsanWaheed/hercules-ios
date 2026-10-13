@@ -312,6 +312,10 @@ def font(manifest):
         g["¡"] = np.roll(g["¡"], (top + bottom) - (H - 1), 0)          # flip about the letter band
         g["¿"] = np.roll(g["?"][::-1, ::-1].copy(), (top + bottom) - (H - 1), 0)
         g["-"] = marks(7, [(mid, x) for x in range(1, 6)])
+        # percent: two small rings and a slash
+        ring = lambda y0, x0: [(y0, x0), (y0, x0 + 1), (y0 + 1, x0), (y0 + 1, x0 + 1)]
+        g["%"] = np.maximum(stroke(w, [[(1, 0.05), (0, 0.95)]], t=1),
+                            marks(w, ring(top + 1, 2) + ring(bottom - 2, w - 4)))
         g["+"] = marks(9, [(mid, x) for x in range(1, 8)] + [(y, 4) for y in range(mid - 3, mid + 4)])
 
         # pad buttons, thin like the game's own captions
