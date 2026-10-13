@@ -24,6 +24,65 @@ description = "Skips the 'Bitte warten ... die Memory Card wird überprüft' scr
 group = "Gameplay"
 default_enabled = false
 
+[[feature]]
+id = "direct-start"
+name = "Start a new game directly"
+description = "Skips the title menu: a cold boot goes straight to the chosen level's story movie, intro screen and level (the launcher is the menu)."
+group = "Gameplay"
+default_enabled = false
+
+[[option]]
+feature = "direct-start"
+id = "level"
+label = "Level"
+description = "Level the new game starts in (4 plays as 5, as in the game)."
+type = "choice"
+default = "1"
+
+[[option.choice]]
+value = "1"
+label = "Level 1"
+
+[[option.choice]]
+value = "2"
+label = "Level 2"
+
+[[option.choice]]
+value = "3"
+label = "Level 3"
+
+[[option.choice]]
+value = "4"
+label = "Level 4"
+
+[[option.choice]]
+value = "5"
+label = "Level 5"
+
+[[option.choice]]
+value = "6"
+label = "Level 6"
+
+[[option.choice]]
+value = "7"
+label = "Level 7"
+
+[[option.choice]]
+value = "8"
+label = "Level 8"
+
+[[option.choice]]
+value = "9"
+label = "Level 9"
+
+[[option.choice]]
+value = "10"
+label = "Level 10"
+
+[[option.choice]]
+value = "11"
+label = "Level 11"
+
 [[plugin]]
 feature = "skip-intro"
 id = "hercules.skip-intro"
@@ -31,3 +90,7 @@ id = "hercules.skip-intro"
 [[plugin]]
 feature = "skip-memcard"
 id = "hercules.skip-memcard"
+
+[[plugin]]
+feature = "direct-start"
+id = "hercules.direct-start"

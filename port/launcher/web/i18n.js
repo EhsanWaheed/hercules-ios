@@ -32,7 +32,6 @@ const STR = {
     },
     opt: {
       language: "SPRACHE",
-      skip_intro: "VORSPANN", skip_memcard: "KARTENTEST",
       internal_resolution: "AUFLÖSUNG", aspect_ratio: "FORMAT", fullscreen: "ANZEIGE", vsync: "BILDSYNC",
       preset: "STIL", hd_sprites: "HD FIGUREN", hd_levels: "HD LANDSCHAFT", hd_hud: "HD ANZEIGEN",
       texture_filtering: "TEXTUREN", antialiasing: "GLÄTTEN", perspective_texturing: "PERSPEKTIVE",
@@ -66,7 +65,6 @@ const STR = {
     pages: { general: "GENERAL", video: "DISPLAY", gfx: "GRAPHICS", filter: "FILTERS", sound: "SOUND" },
     opt: {
       language: "LANGUAGE",
-      skip_intro: "INTRO", skip_memcard: "CARD CHECK",
       internal_resolution: "RESOLUTION", aspect_ratio: "ASPECT", fullscreen: "MODE", vsync: "VSYNC",
       preset: "STYLE", hd_sprites: "HD CHARACTERS", hd_levels: "HD SCENERY", hd_hud: "HD DISPLAY",
       texture_filtering: "TEXTURES", antialiasing: "SMOOTHING", perspective_texturing: "PERSPECTIVE",
@@ -100,7 +98,6 @@ const STR = {
     pages: { general: "GÉNÉRAL", video: "AFFICHAGE", gfx: "GRAPHISMES", filter: "FILTRES", sound: "SON" },
     opt: {
       language: "LANGUE",
-      skip_intro: "INTRO", skip_memcard: "TEST CARTE",
       internal_resolution: "RÉSOLUTION", aspect_ratio: "FORMAT", fullscreen: "MODE", vsync: "SYNCHRO",
       preset: "STYLE", hd_sprites: "PERSONNAGES HD", hd_levels: "DÉCORS HD", hd_hud: "INTERFACE HD",
       texture_filtering: "TEXTURES", antialiasing: "LISSAGE", perspective_texturing: "PERSPECTIVE",
@@ -134,7 +131,6 @@ const STR = {
     pages: { general: "GENERAL", video: "PANTALLA", gfx: "GRÁFICOS", filter: "FILTROS", sound: "SONIDO" },
     opt: {
       language: "IDIOMA",
-      skip_intro: "INTRO", skip_memcard: "TEST TARJETA",
       internal_resolution: "RESOLUCIÓN", aspect_ratio: "FORMATO", fullscreen: "MODO", vsync: "SINCRONÍA",
       preset: "ESTILO", hd_sprites: "PERSONAJES HD", hd_levels: "ESCENARIOS HD", hd_hud: "MARCADORES HD",
       texture_filtering: "TEXTURAS", antialiasing: "SUAVIZADO", perspective_texturing: "PERSPECTIVA",
@@ -168,7 +164,6 @@ const STR = {
     pages: { general: "GENERALE", video: "SCHERMO", gfx: "GRAFICA", filter: "FILTRI", sound: "AUDIO" },
     opt: {
       language: "LINGUA",
-      skip_intro: "INTRO", skip_memcard: "TEST SCHEDA",
       internal_resolution: "RISOLUZIONE", aspect_ratio: "FORMATO", fullscreen: "MODALITÀ", vsync: "VSYNC",
       preset: "STILE", hd_sprites: "PERSONAGGI HD", hd_levels: "SCENARI HD", hd_hud: "INDICATORI HD",
       texture_filtering: "TEXTURE", antialiasing: "SMUSSATURA", perspective_texturing: "PROSPETTIVA",

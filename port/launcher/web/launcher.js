@@ -284,8 +284,6 @@ const pct = vs => vs.map(v => [v, "=" + Math.round(v * 100)]);
 const PAGES = [
   ["general", [
     ["language", LANGS.map(([k, n]) => [k, "=" + n])],
-    ["skip_intro", [[false, "show"], [true, "skip"]]],
-    ["skip_memcard", [[false, "show"], [true, "skip"]]],
   ]],
   ["video", [
     ["internal_resolution", [["native", "native"], ["720p", "=720P"], ["1080p", "=1080P"], ["1440p", "=1440P"], ["4k", "=4K"]]],

@@ -269,7 +269,12 @@ def build_variant(build, parts):
     os.replace(tmp, variant)
 
 
-def write_mod_state(build, pack, start_level="off", widescreen=None, cfg=None):
+def write_mod_state(build, pack, start_level="off", widescreen=None, cfg=None, new_game=False):
+    """Mods for the next run. A new game (new_game) boots straight into the
+    level's story movie and intro screen (hercules.skip-intro direct-start,
+    the launcher replaces the title menu); level 0 is not on that path and
+    starts as level 1 switched by hercules.level-select. A save-state load
+    leaves both off."""
     path = build / "mods" / "state.toml"
     doc = read_toml(path) or {"format_version": 2}
     pkgs = doc.setdefault("package", [])
@@ -292,9 +297,13 @@ def write_mod_state(build, pack, start_level="off", widescreen=None, cfg=None):
         hd.setdefault("resources", {})["pack"] = str(pack)
     # The generic loader would load the same pack a second time.
     feature(GENERIC_PACKAGE, GENERIC_FEATURE)["enabled"] = False
+    level = start_level if new_game else "off"
     lv = feature(LEVEL_PACKAGE, LEVEL_FEATURE)
-    lv["enabled"] = start_level != "off"
-    lv["values"] = {"level": start_level}
+    lv["enabled"] = level == "0"
+    lv["values"] = {"level": level}
+    direct = feature(SKIP_PACKAGE, "direct-start")
+    direct["enabled"] = bool(new_game)
+    direct["values"] = {"level": "1" if level in ("off", "0") else level}
     if widescreen is not None:     # PSX titles widen only through a mod
         feature(WIDE_PACKAGE, WIDE_FEATURE)["enabled"] = bool(widescreen)
     if cfg is not None:
@@ -832,7 +841,8 @@ class Launcher(Adw.Application):
         write_settings(self.build, self.cfg)
         write_mod_state(self.build, pack,
                         self.cfg["start_level"] if self.selected_slot is None else "off",
-                        widescreen=self.cfg["aspect_ratio"] == "16:9", cfg=self.cfg)
+                        widescreen=self.cfg["aspect_ratio"] == "16:9", cfg=self.cfg,
+                        new_game=self.selected_slot is None)
 
         env = game_env(self.cfg, self.selected_slot)
         log = open(self.build / "launcher_last_run.log", "w")
@@ -1010,7 +1020,8 @@ class WebLauncher(Gtk.Application):
             pack = None
         write_settings(self.build, self.cfg)
         write_mod_state(self.build, pack, self.cfg["start_level"] if slot is None else "off",
-                        widescreen=self.cfg["aspect_ratio"] == "16:9", cfg=self.cfg)
+                        widescreen=self.cfg["aspect_ratio"] == "16:9", cfg=self.cfg,
+                        new_game=slot is None)
         log = open(self.build / "launcher_last_run.log", "w")
         try:
             self.game = subprocess.Popen([str(self.exe), "--no-launcher"], cwd=self.build,
