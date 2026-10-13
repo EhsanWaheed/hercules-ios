@@ -1,6 +1,6 @@
 # Hercules Recompiled
 
-A native PC (Linux) port of the 1997 PlayStation action game *Disney's
+A native PC (Windows and Linux) port of the 1997 PlayStation action game *Disney's
 Hercules* (PAL, German release **SCES-00893**), plus the decompilation work
 behind it. The game logic runs unchanged as statically recompiled code; only
 the platform layer is replaced: 1080p, true 16:9, HD sprites, level textures
@@ -11,9 +11,37 @@ that boots straight into the level you pick.
 **This repository contains no game data.** You need your own copy of the
 game. Every graphic, sound and code byte of the game is read from your disc
 image at build or run time, and everything made from it (extracted files,
-disassembly, HD texture packs, launcher artwork) stays out of git.
+disassembly, HD texture packs, launcher artwork) stays out of git. The
+prebuilt downloads contain the game's program code translated to x86-64, but
+no graphics, sound, video or level data: those still come from your disc.
 
 Fan project, not affiliated with or endorsed by Disney or Sony.
+
+## Download
+
+Prebuilt for players who don't want to build it themselves:
+
+| System | Download |
+|--------|----------|
+| Windows 10/11 (x64) | [**hercules-recompiled-windows-x64.zip**](https://github.com/obaidr1/hercules-recompiled/releases/latest/download/hercules-recompiled-windows-x64.zip) |
+| Linux (x64, glibc 2.35+: Ubuntu 22.04, Debian 12, Fedora 36 or newer) | [**hercules-recompiled-linux-x64.zip**](https://github.com/obaidr1/hercules-recompiled/releases/latest/download/hercules-recompiled-linux-x64.zip) |
+
+Checksums and release notes: [latest release](https://github.com/obaidr1/hercules-recompiled/releases/latest).
+
+1. Unzip into a folder of its own (the archive has no top-level folder).
+2. Start `Hercules_Recompiled.exe` (Windows) or `./Hercules_Recompiled` (Linux).
+3. On first start, pick your disc image: the `.cue` of a dump of the
+   **German PAL release SCES-00893** (Redump: *Disneys Hercules
+   Action-Spiel (Germany)*, `.cue` + `.bin`). The choice is remembered in
+   `disc.cfg` next to the program.
+4. Choose a level in the launcher. Keyboard, mouse and gamepads work; F11
+   toggles fullscreen.
+
+Windows shows a SmartScreen warning because the program is not signed:
+click **More info → Run anyway**.
+
+The downloads play in original resolution (with widescreen, CRT simulation
+and save states). HD graphics need the source build below for now.
 
 ## Layout
 
@@ -22,13 +50,14 @@ Fan project, not affiliated with or endorsed by Disney or Sony.
 | [`decomp/`](decomp) | Decompilation of the main executable and the overlays (splat + GCC 2.7.2 / maspsx, byte-identical rebuild), file-format notes (levels, sprites, videos), tools for extraction, HD upscaling and texture packs |
 | [`port/`](port) | The PC port, built on [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp): game configuration, game-specific mods (HD sprites, widescreen, level select, skip intro / direct start) and the launcher |
 | `port/psxrecomp` | Submodule: the upstream framework |
-| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Two framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path) |
+| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Three framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher) |
 
 ## Getting started
 
 Only the **German PAL release (SCES-00893)** works: the port, its mods and
 the HD pack are tied to that exact disc. US, Japanese and other PAL versions
-are not supported. Tested on Linux (Fedora).
+are not supported. Tested on Linux (Fedora) and Windows (Wine);
+`port/scripts/build_windows.sh` cross-builds the Windows release with MinGW-w64.
 
 Needs GCC/G++, CMake ≥ 3.20, Ninja, pkg-config, git, Python 3 with numpy and
 Pillow, and for the launcher PyGObject with GTK 4, libadwaita and
