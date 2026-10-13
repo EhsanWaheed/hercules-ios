@@ -1,0 +1,168 @@
+/* Widescreen for Hercules (SCES-00893).
+ *
+ * PSXRecomp keeps PSX titles at 4:3 until a trusted plugin opts in. With the
+ * native-wide renderer the 4:3 picture stays exact and the extra width is
+ * drawn on a separate host surface ([widescreen] gte_game_mode in game.toml
+ * marks level frames as gameplay). The game's own culls still assume 320
+ * pixels (psxrecomp/docs/WIDESCREEN.md).
+ *
+ * HUD: every HUD piece is one SPRT built by a small helper (ENGINE1
+ * func_80049F9C, ENGINE3 func_80046D50: GetClut(0x160, 0x20 + n), x in $s5,
+ * caller's $ra at sp+0x2C). Packets come from the shared, double-buffered
+ * primitive pool, so their addresses change every frame; the helper's
+ * closing `sw $a0, 0($s0)` is hooked and each packet built for the HUD
+ * routine (ENGINE1 func_80049128 / func_80049D64, ENGINE3 func_800465B0) is
+ * anchored to the left or right screen edge by its x. Other callers (menus)
+ * stay centred.
+ *
+ * Backdrop: the far scenery (sky, distant forest, meadow) is a separate 2D
+ * map of 16x16 cells (ENGINE1 func_8003D348, ENGINE3 func_8003C214; arg a0 =
+ * {scrollX, scrollY}). Each row draws 21 columns from screen x = -(scrollX&15),
+ * merging equal neighbours into wider SPRTs (POLY_FT4 for flipped cells), so
+ * it ends 9 px past the 4:3 edge. Instruction hooks widen that loop while the
+ * native-wide margin is open: start column k earlier (mod map width), fine
+ * scroll +16k (so x starts 16k further left) and both `t5 < 21` bounds become
+ * `t5 < 21 + 2k`. (Calling the builder repeatedly does not work: its exit
+ * splices OT buckets 0x88/0x8C into 0x70/0x7C, which loops on a second call.)
+ */
+#include "mod_plugins.h"
+#include "cpu_state.h"
+
+#define REG_S0 16
+#define REG_S5 21
+#define REG_SP 29
+#define REG_A0 4
+#define REG_GP 28
+#define REG_RA 31
+#define SW_A0_0_S0 0xAE040000u   /* sw $a0, 0x0($s0) */
+#define HUD_SPLIT_X 200          /* left cluster ends ~180, right starts 236 */
+
+typedef struct {
+    const char* name;
+    uint32_t site;               /* the packet's closing tag store */
+    uint32_t check_addr, check_word; /* GetClut call inside the helper */
+    uint32_t hud_lo, hud_hi;     /* callers that draw the in-game HUD */
+} HudHelper;
+
+static const HudHelper k_helpers[] = {
+    {"ENGINE1", 0x8004A050u, 0x80049FE8u, 0x0C005F43u, 0x80049128u, 0x80049F9Cu},
+    {"ENGINE3", 0x80046E04u, 0x80046D9Cu, 0x0C005F43u, 0x800465B0u, 0x80046D50u},
+};
+#define HELPER_COUNT (sizeof(k_helpers) / sizeof(k_helpers[0]))
+
+static void on_hud_sprite(struct CPUState* cpu, uint32_t address) {
+    const HudHelper* h = NULL;
+    for (uint32_t i = 0; i < HELPER_COUNT; i++)
+        if ((k_helpers[i].site & 0x1FFFFFFFu) == (address & 0x1FFFFFFFu)) h = &k_helpers[i];
+    /* Both engines load at the same address: confirm the helper is resident. */
+    if (!h || psx_mod_read_word(h->check_addr) != h->check_word) return;
+    const uint32_t ra = psx_mod_read_word(cpu->gpr[REG_SP] + 0x2Cu);
+    if (ra < h->hud_lo || ra >= h->hud_hi) return;
+    const int16_t x = (int16_t)cpu->gpr[REG_S5];
+    psx_mod_anchor_hud_primitive(cpu->gpr[REG_S0], x < HUD_SPLIT_X ? -1 : +1);
+    psx_mod_counter_add("hercules.widescreen.hud_anchor", 1);
+}
+
+static void on_activate(void) {
+    if (!psx_mod_set_fixed_display_aspect(16, 9))
+        psx_mod_counter_add("hercules.widescreen.aspect_refused", 1);
+}
+
+/* Backdrop builder sites (same layout in both engines, +0x1134 apart). */
+#define REG_V0 2
+#define REG_T5 13
+#define REG_S3 19
+#define REG_S7 23
+#define BACKDROP_COLS 21
+#define SW_S7_FINE   0xAFB70020u   /* sw s7,0x20(sp): fine scroll x (scrollX & 15) */
+#define SW_S7_COL    0xAFB70008u   /* sw s7,0x8(sp): start column (scrollX/16 mod width) */
+#define BEQZ_RUN     0x10400007u   /* beqz v0 after the run-scan `slti v0,t5,21` */
+#define BNEZ_LOOP    0x1440FF9Cu   /* bnez v0 after the column-loop `slti v0,t5,21` */
+
+typedef struct { uint32_t fine, col, run, loop; } Backdrop;
+static const Backdrop k_backdrops[] = {
+    {0x8003D3B0u, 0x8003D420u, 0x8003D4ACu, 0x8003D5F4u},   /* ENGINE1 func_8003D348 */
+    {0x8003C27Cu, 0x8003C2ECu, 0x8003C378u, 0x8003C4C0u},   /* ENGINE3 func_8003C214 */
+};
+#define BACKDROP_COUNT (sizeof(k_backdrops) / sizeof(k_backdrops[0]))
+
+/* Extra 16-px columns per side; 0 at 4:3, so every hook is then a no-op. */
+static int backdrop_extra(void) {
+    const int margin = psx_mod_widescreen_view_x_margin();
+    return margin > 0 ? (margin + 15) / 16 + 1 : 0;
+}
+
+static void on_backdrop(struct CPUState* cpu, uint32_t address) {
+    const int k = backdrop_extra();
+    if (k == 0) return;
+    const uint32_t a = address & 0x1FFFFFFFu;
+    for (uint32_t i = 0; i < BACKDROP_COUNT; i++) {
+        const Backdrop* b = &k_backdrops[i];
+        if (a == (b->fine & 0x1FFFFFFFu)) {
+            cpu->gpr[REG_S7] += 16u * (uint32_t)k;          /* start k columns further left */
+        } else if (a == (b->col & 0x1FFFFFFFu)) {
+            const int32_t width = (int32_t)cpu->gpr[REG_S3];
+            if (width > 0) {
+                int32_t col = ((int32_t)cpu->gpr[REG_S7] - k) % width;
+                cpu->gpr[REG_S7] = (uint32_t)(col < 0 ? col + width : col);
+            }
+        } else if (a == (b->run & 0x1FFFFFFFu) || a == (b->loop & 0x1FFFFFFFu)) {
+            cpu->gpr[REG_V0] = (int32_t)cpu->gpr[REG_T5] < BACKDROP_COLS + 2 * k;
+            if (a == (b->loop & 0x1FFFFFFFu)) psx_mod_counter_add("hercules.widescreen.backdrop_cols", 1);
+        }
+    }
+}
+
+/* Panorama skies (level overlays): a 256-px wide image repeating horizontally,
+ * drawn as three SPRTs per layer by builder(x, y, w, h, [sp+0x10] u, [sp+0x14]
+ * v, [sp+0x18] depth) -- the partial left piece, one full 256-px repeat and
+ * the partial right piece. While the margin is open, every full repeat also
+ * gets the neighbouring repeats at x-256 and x+256 (same stack arguments), so
+ * the sky continues into the margins. Each call just adds one SPRT to the OT. */
+#define JAL_SETSPRT 0x0C00600Eu
+#define ORI_V0_64   0x34020064u
+typedef struct { uint32_t func, jal_addr, ori_addr; } Panorama;
+static const Panorama k_panoramas[] = {
+    {0x80068910u, 0x80068964u, 0x80068998u},   /* OV2  (level 2) func_80068910 */
+    {0x800687E8u, 0x8006883Cu, 0x80068870u},   /* OV8  (level 8) func_800687E8 */
+    {0x800753E0u, 0x80075434u, 0x80075468u},   /* OV9  (level 9) func_800753E0 */
+};
+#define PANORAMA_COUNT (sizeof(k_panoramas) / sizeof(k_panoramas[0]))
+static int s_in_panorama;
+
+static void on_panorama(struct CPUState* cpu, uint32_t address) {
+    if (s_in_panorama || psx_mod_widescreen_view_x_margin() <= 0) return;
+    const Panorama* pn = NULL;
+    for (uint32_t i = 0; i < PANORAMA_COUNT; i++)
+        if ((k_panoramas[i].func & 0x1FFFFFFFu) == (address & 0x1FFFFFFFu) &&
+            psx_mod_read_word(k_panoramas[i].jal_addr) == JAL_SETSPRT &&
+            psx_mod_read_word(k_panoramas[i].ori_addr) == ORI_V0_64)
+            pn = &k_panoramas[i];
+    if (!pn || cpu->gpr[6] != 0x100u) return;     /* only the full repeat */
+    const uint32_t ra = cpu->gpr[REG_RA];
+    const uint32_t x = cpu->gpr[4], y = cpu->gpr[5], w = cpu->gpr[6], h = cpu->gpr[7];
+    s_in_panorama = 1;
+    (void)psx_mod_call_guest(cpu, pn->func, ra, x - 0x100u, y, w, h);
+    (void)psx_mod_call_guest(cpu, pn->func, ra, x + 0x100u, y, w, h);
+    s_in_panorama = 0;
+    /* restore the original arguments; the original body then draws its own repeat */
+    cpu->gpr[4] = x; cpu->gpr[5] = y; cpu->gpr[6] = w; cpu->gpr[7] = h;
+    psx_mod_counter_add("hercules.widescreen.panorama", 1);
+}
+
+PSX_MOD_CONSTRUCTOR(hercules_register_widescreen) {
+    (void)psx_mod_register_activation_plugin("hercules.widescreen", on_activate);
+    for (uint32_t i = 0; i < HELPER_COUNT; i++)
+        (void)psx_mod_register_instruction_plugin("hercules.widescreen", k_helpers[i].site,
+                                                  SW_A0_0_S0, on_hud_sprite);
+    for (uint32_t i = 0; i < BACKDROP_COUNT; i++) {
+        const Backdrop* b = &k_backdrops[i];
+        (void)psx_mod_register_instruction_plugin("hercules.widescreen", b->fine, SW_S7_FINE, on_backdrop);
+        (void)psx_mod_register_instruction_plugin("hercules.widescreen", b->col, SW_S7_COL, on_backdrop);
+        (void)psx_mod_register_instruction_plugin("hercules.widescreen", b->run, BEQZ_RUN, on_backdrop);
+        (void)psx_mod_register_instruction_plugin("hercules.widescreen", b->loop, BNEZ_LOOP, on_backdrop);
+    }
+    for (uint32_t i = 0; i < PANORAMA_COUNT; i++)
+        (void)psx_mod_register_function_entry_plugin("hercules.widescreen", k_panoramas[i].func,
+                                                     on_panorama);
+}

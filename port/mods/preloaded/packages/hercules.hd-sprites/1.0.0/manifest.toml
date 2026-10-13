@@ -1,0 +1,46 @@
+format_version = 5
+id = "hercules.hd-sprites"
+version = "1.0.0"
+name = "HD Sprites"
+author = "hercules decomp"
+description = "Replaces Hercules' character sprites block by block from a DuckStation-format texture pack (OpenGL). Also loads any other replacements in the same pack."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SCES-00893"
+
+[[feature]]
+id = "hd-sprites"
+name = "HD Sprites"
+description = "Uploads every decoded sprite block on its own so pack images named by hercules/tools/sprite_texpack.py match. Do not enable HD Texture Packs at the same time; this feature already loads the pack."
+group = "Visual"
+default_enabled = false
+
+[[resource]]
+feature = "hd-sprites"
+id = "pack"
+label = "Texture pack folder"
+description = "Folder with replacements/ and dumps/, usually mods/texture-packs/SCES-00893 beside the executable."
+format = "directory"
+required = true
+
+[[option]]
+feature = "hd-sprites"
+id = "replacements"
+label = "Load replacements"
+description = "Display matching artwork from replacements (OpenGL only)."
+type = "boolean"
+default = "true"
+
+[[option]]
+feature = "hd-sprites"
+id = "dump"
+label = "Dump textures"
+description = "Collect original texture usage while playing; per-block sprite uploads then dump one image per block."
+type = "boolean"
+default = "false"
+
+[[plugin]]
+feature = "hd-sprites"
+id = "hercules.hd-sprites"
