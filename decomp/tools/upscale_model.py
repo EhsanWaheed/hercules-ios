@@ -9,7 +9,9 @@ Runs in chaiNNer's bundled Python (it has torch + spandrel):
 IN_DIR may be a tree; its folders are mirrored below OUT_DIR. Colour and
 alpha are upscaled separately: transparent pixels first take the
 colour of their nearest opaque neighbour (so edges do not pick up a dark
-halo), the alpha channel goes through the model as a grey image. Existing
+halo), the alpha channel goes through the model as a grey image (skipped
+for opaque pictures). Images larger than about 180x180 run in overlapping
+128-pixel tiles to keep memory low. Existing
 outputs newer than their input are skipped.
 """
 import sys
@@ -40,11 +42,34 @@ def bleed(rgb, alpha, steps=8):
     return rgb
 
 
-def run(model, img):
+TILE, PAD = 128, 16          # large images go through the model in overlapping tiles
+
+
+def run_whole(model, img):
     x = torch.from_numpy(img.transpose(2, 0, 1)[None].copy()).float() / 255.0
     with torch.no_grad():
         y = model(x)
-    return (y[0].clamp(0, 1).numpy().transpose(1, 2, 0) * 255.0 + 0.5).astype(np.uint8)
+    return y[0].clamp(0, 1).numpy().transpose(1, 2, 0)
+
+
+def run(model, img):
+    h, w = img.shape[:2]
+    if h * w <= TILE * TILE * 2:
+        y = run_whole(model, img)
+    else:
+        y = None
+        for ty in range(0, h, TILE):
+            for tx in range(0, w, TILE):
+                y0, x0 = max(0, ty - PAD), max(0, tx - PAD)
+                y1, x1 = min(h, ty + TILE + PAD), min(w, tx + TILE + PAD)
+                part = run_whole(model, img[y0:y1, x0:x1])
+                s = part.shape[0] // (y1 - y0)
+                if y is None:
+                    y = np.zeros((h * s, w * s, 3), np.float32)
+                th, tw = min(TILE, h - ty), min(TILE, w - tx)
+                oy, ox = (ty - y0) * s, (tx - x0) * s
+                y[ty * s:(ty + th) * s, tx * s:(tx + tw) * s] = part[oy:oy + th * s, ox:ox + tw * s]
+    return (y * 255.0 + 0.5).astype(np.uint8)
 
 
 def main():
@@ -62,7 +87,10 @@ def main():
         im = np.asarray(Image.open(f).convert("RGBA"))
         alpha = im[..., 3]
         rgb = run(model, bleed(im[..., :3], alpha).astype(np.uint8))
-        a = run(model, np.repeat(alpha[..., None], 3, 2))[..., 0]
+        if alpha.min() == 255:               # opaque picture: no alpha pass
+            a = np.full(rgb.shape[:2], 255, np.uint8)
+        else:
+            a = run(model, np.repeat(alpha[..., None], 3, 2))[..., 0]
         Image.fromarray(np.dstack([rgb, a]), "RGBA").save(out)
         done += 1
     print(f"{dst}: {done} upscaled")
