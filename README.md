@@ -43,6 +43,12 @@ Checksums and release notes: [latest release](https://github.com/obaidr1/hercule
 Windows shows a SmartScreen warning because the program is not signed:
 click **More info → Run anyway**.
 
+**Updates come by themselves** (from 0.5.0 on): on start the launcher checks
+for a new release, shows its changelog and installs it on request. Settings,
+saves, the disc path and the HD graphics stay. *Options → General → Auto
+updates* turns the check off. Coming from 0.4.0 or older: unzip the new
+download over your existing folder once, so your HD graphics and saves stay.
+
 **HD graphics are made on your PC, from your disc.** After your first game
 the launcher starts building them in the background, at low priority:
 about 4 hours on a laptop CPU, while you play in the original graphics.
