@@ -77,7 +77,19 @@ DEFAULTS = {
     "frequency": 48000, "spu_hq": True, "hd_sprites": True, "hd_levels": True,
     "hd_hud": True, "start_level": "off",
     "crt_sim": False, "crt_mask": 0.5, "crt_bloom": 0.35,
+    "language": None,          # launcher texts; None = from the system locale (de, en, fr, es, it)
 }
+LANGUAGES = ("de", "en", "fr", "es", "it")
+
+
+def system_language():
+    import locale
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        v = os.environ.get(var, "")
+        if v[:2] in LANGUAGES:
+            return v[:2]
+    loc = (locale.getlocale()[0] or "")[:2]
+    return loc if loc in LANGUAGES else "en"
 PRESETS = {
     "original": dict(internal_resolution="native", texture_filtering="nearest",
                      antialiasing=False, crt_filter="crt", scanlines=True, crt_sim=True,
@@ -875,6 +887,8 @@ class WebLauncher(Gtk.Application):
         except (OSError, ValueError):
             self.store = {}
         self.cfg = dict(DEFAULTS, **self.store.get("settings", {}))
+        if self.cfg.get("language") not in LANGUAGES:
+            self.cfg["language"] = system_language()
         self.names = self.store.get("slot_names", {})
         self.game = None
 
@@ -898,8 +912,7 @@ class WebLauncher(Gtk.Application):
             if st.thumb is not None:
                 png = st.thumb.save_to_png_bytes().get_data()
                 thumb = "data:image/png;base64," + base64.b64encode(png).decode()
-            states.append({"slot": st.slot, "name": name, "thumb": thumb,
-                           "when": time.strftime("%d.%m.%Y %H:%M", time.localtime(st.mtime))})
+            states.append({"slot": st.slot, "name": name, "thumb": thumb, "mtime": st.mtime})
         return {"cfg": self.cfg, "preset": self.preset(), "states": states,
                 "exe_ok": self.exe.exists()}
 
@@ -977,15 +990,16 @@ class WebLauncher(Gtk.Application):
     # -- game
     def play(self, slot):
         if self.game is not None:
-            return {"ok": False, "error": "Das Spiel läuft schon"}
+            return {"ok": False, "error": "running"}
         if not self.exe.exists():
-            return {"ok": False, "error": "Spiel nicht gebaut"}
+            return {"ok": False, "error": "not_built"}
         parts = chosen_parts(self.cfg)
         if variant_stale(self.build, parts):
             try:
                 build_variant(self.build, parts)
             except (OSError, subprocess.CalledProcessError) as e:
-                return {"ok": False, "error": f"HD Pack {e}"}
+                print(f"HD pack: {e}", file=sys.stderr)
+                return {"ok": False, "error": "pack"}
         pack = pack_for(self.build, parts)
         if pack is not None and not (pack / "replacements").is_dir():
             pack = None
@@ -999,7 +1013,8 @@ class WebLauncher(Gtk.Application):
                                          stderr=subprocess.STDOUT)
         except OSError as e:
             log.close()
-            return {"ok": False, "error": f"Start fehlgeschlagen {e}"}
+            print(f"start failed: {e}", file=sys.stderr)
+            return {"ok": False, "error": "start_failed"}
         self.win.set_visible(False)
 
         def wait():

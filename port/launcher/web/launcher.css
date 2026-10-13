@@ -78,3 +78,6 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .scene * { animation: none !important; }
 }
+
+/* HD art (4x) is drawn smoothly down to the window size */
+.hd .scene img, .hd .scene canvas { image-rendering: auto; }
