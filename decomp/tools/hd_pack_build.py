@@ -227,7 +227,7 @@ def main():
         (new / "config.yaml").write_text(
             "# Level textures key off one 384x512 upload; later partial writes must\n"
             "# only cut out what they overwrite instead of dropping the whole upload.\n"
-            "MaxVRAMWriteSplits: 64\n")
+            "MaxVRAMWriteSplits: 64\n", newline="\n")
         if pack.exists():
             shutil.rmtree(pack)
         new.rename(pack)
