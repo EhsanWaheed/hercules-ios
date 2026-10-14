@@ -1,15 +1,15 @@
 {
   "format_version": 1,
   "game": {
-    "name": "Hercules",
+    "name": "Disney's Hercules",
     "id": "SCES-00893",
     "boot_exe": "SCES_008.93"
   },
   "marketing": {
-    "description": "",
-    "publisher": "",
-    "year": "",
-    "region": "USA",
+    "description": "Native PC port of the 1997 PlayStation action game, statically recompiled, with HD graphics made from your own disc, true 16:9 and a launcher in the style of the game's menus.",
+    "publisher": "Sony Computer Entertainment Europe",
+    "year": "1997",
+    "region": "Europe",
     "players": 1
   },
   "rom_identity": {
@@ -38,7 +38,7 @@
     "source": "boot_exe_jal"
   },
   "warnings": [
-    "cue has only 1 TRACK \u2014 Track-01-only dumps fail multi-track netplay/catalog gates; prefer a full Redump cue."
+    "cue has only 1 TRACK — Track-01-only dumps fail multi-track netplay/catalog gates; prefer a full Redump cue."
   ],
   "notes": [
     "entry_pc/load_address/text_size/stack_base taken from PS-X EXE header.",

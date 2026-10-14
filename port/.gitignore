@@ -85,7 +85,7 @@ starvation_dump.jsonl
 /*.bmp
 /*.png
 !/catalog_identity.json
-!/disc_probe.json
+/disc_probe.json      # local paths; only the project setup tools read it
 !/.recomp.json
 
 # launcher artwork cut from the game (launcher/build_assets.py) -- never commit
