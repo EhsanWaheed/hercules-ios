@@ -127,7 +127,7 @@ const Setting kSettings[] = {
     {"hd_levels", "b", "true"}, {"hd_hud", "b", "true"}, {"start_level", "s", "off"},
     {"crt_sim", "b", "false"}, {"crt_mask", "f", "0.5"}, {"crt_bloom", "f", "0.35"},
     {"skip_intro", "b", "true"}, {"skip_memcard", "b", "true"}, {"language", "s", ""}, {"fast_cd", "b", "true"},
-    {"updates", "b", "true"},
+    {"updates", "b", "true"}, {"frame_blend", "s", "off"},
 };
 const char* const kVideoKeys[] = {"internal_resolution", "window_width", "fullscreen", "aspect_ratio", "vsync",
                                   "texture_filtering", "antialiasing", "crt_filter", "scanlines",
@@ -444,7 +444,8 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     const fs::path pack = !chosen.empty() ? chosen : hd_pack_ready(c) ? pack_none(c) : fs::path{};
     std::string t = "format_version = 2\n";
     for (const char* p : {"hercules.hd-sprites", "psx.enhancement.hd-textures", "hercules.level-select",
-                          "hercules.widescreen", "hercules.skip-intro", "psx.enhancement.cd-speed"})
+                          "hercules.widescreen", "hercules.skip-intro", "psx.enhancement.cd-speed",
+                          "hercules.frame-blend"})
         t += std::string("\n[[package]]\nid = \"") + p + "\"\n";
     auto feature = [&](const char* pkg, const char* id, bool on) {
         t += std::string("\n[[feature]]\npackage_id = \"") + pkg + "\"\nid = \"" + id + "\"\nenabled = " +
@@ -465,6 +466,10 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     // Measured on levels 2, 3, 8, 10; from 8x on the game's loader stalls.
     feature("psx.enhancement.cd-speed", "cd-speed", c.store.b("fast_cd"));
     t += "\n[feature.values]\nmultiplier = \"4\"\n";
+    // Crossfade the game's 25 fps to the display refresh (presentation only).
+    const std::string blend = c.store.get("frame_blend");
+    feature("hercules.frame-blend", "frame-blend", blend == "linear" || blend == "adaptive");
+    t += "\n[feature.values]\nblend = " + toml_str(blend == "adaptive" ? "adaptive" : "linear") + "\n";
     write_atomic(c.exe_dir / "mods" / "state.toml", t);
 }
 
@@ -897,6 +902,7 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
                    {"vsync", {{"on", "on"}, {"adaptive", "adaptive"}, {"vrr", "=VRR"}, {"off", "off"}}},
                    {"preset", {{"original", "p_original"}, {"hd", "p_hd"}, {"custom", "p_custom"}}}}},
         {"gfx", {{"hd_build", {}}, {"hd_sprites", kOnOff}, {"hd_levels", kOnOff}, {"hd_hud", kOnOff},
+                 {"frame_blend", {{"off", "off"}, {"linear", "soft"}, {"adaptive", "adaptive"}}},
                  {"texture_filtering", {{"nearest", "sharp"}, {"bilinear", "soft"}, {"xbr", "=XBR"}}},
                  {"antialiasing", kOnOff}, {"perspective_texturing", kOnOff}, {"geometry_correction", kOnOff}}},
         {"filter", {{"crt_sim", kOnOff}, {"crt_mask", pct({0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1})},

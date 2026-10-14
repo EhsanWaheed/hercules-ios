@@ -75,7 +75,8 @@ target_sources(psx-runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_hd_sprites.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_level_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_skip_intro.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_widescreen.c")
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_widescreen.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_frame_blend.c")
 
 # The launcher, compiled into the game executable (psx_game_launcher.h): a
 # menu in the style of the 1997 title screens, its art decoded from the

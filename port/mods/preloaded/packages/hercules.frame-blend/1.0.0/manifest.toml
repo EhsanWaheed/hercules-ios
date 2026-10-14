@@ -1,0 +1,38 @@
+format_version = 5
+id = "hercules.frame-blend"
+version = "1.0.0"
+name = "Frame Blend"
+author = "hercules decomp"
+description = "Presents the game's 25 frames per second at the display's refresh rate by crossfading between them. The game itself is unchanged (same speed, same logic); moving objects can show a faint double image."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SCES-00893"
+
+[[feature]]
+id = "frame-blend"
+name = "Frame Blend"
+description = "Crossfade between the game's frames at the display refresh rate (OpenGL)."
+group = "Visual"
+default_enabled = false
+
+[[option]]
+feature = "frame-blend"
+id = "blend"
+label = "Blend"
+description = "linear: full crossfade; adaptive: crossfade small changes, switch large ones cleanly (fewer double images)."
+type = "choice"
+default = "linear"
+
+[[option.choice]]
+value = "linear"
+label = "Linear"
+
+[[option.choice]]
+value = "adaptive"
+label = "Motion adaptive"
+
+[[plugin]]
+feature = "frame-blend"
+id = "hercules.frame-blend"

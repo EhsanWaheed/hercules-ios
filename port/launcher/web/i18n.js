@@ -42,7 +42,7 @@ const STR = {
       general: "ALLGEMEIN", pause: "PAUSE", keys: "TASTEN", video: "BILD", gfx: "GRAFIK", filter: "FILTER", sound: "TON",
     },
     opt: {
-      language: "SPRACHE", volume: "LAUTSTÄRKE", fast_cd: "SCHNELL LADEN", updates: "AUTO-UPDATES",
+      language: "SPRACHE", volume: "LAUTSTÄRKE", fast_cd: "SCHNELL LADEN", updates: "AUTO-UPDATES", frame_blend: "BILDGLÄTTUNG",
       hd_build: "HD-GRAFIKEN",
       internal_resolution: "AUFLÖSUNG", aspect_ratio: "FORMAT", fullscreen: "ANZEIGE", vsync: "BILDSYNC",
       preset: "STIL", hd_sprites: "HD FIGUREN", hd_levels: "HD LANDSCHAFT", hd_hud: "HD ANZEIGEN",
@@ -88,7 +88,7 @@ const STR = {
     },
     pages: { general: "GENERAL", pause: "PAUSE", keys: "CONTROLS", video: "DISPLAY", gfx: "GRAPHICS", filter: "FILTERS", sound: "SOUND" },
     opt: {
-      language: "LANGUAGE", volume: "VOLUME", fast_cd: "FAST LOADING", updates: "AUTO UPDATES",
+      language: "LANGUAGE", volume: "VOLUME", fast_cd: "FAST LOADING", updates: "AUTO UPDATES", frame_blend: "FRAME BLEND",
       hd_build: "HD GRAPHICS",
       internal_resolution: "RESOLUTION", aspect_ratio: "ASPECT", fullscreen: "MODE", vsync: "VSYNC",
       preset: "STYLE", hd_sprites: "HD CHARACTERS", hd_levels: "HD SCENERY", hd_hud: "HD DISPLAY",
@@ -134,7 +134,7 @@ const STR = {
     },
     pages: { general: "GÉNÉRAL", pause: "PAUSE", keys: "TOUCHES", video: "AFFICHAGE", gfx: "GRAPHISMES", filter: "FILTRES", sound: "SON" },
     opt: {
-      language: "LANGUE", volume: "VOLUME", fast_cd: "CHARGEMENT RAPIDE", updates: "MISES À JOUR",
+      language: "LANGUE", volume: "VOLUME", fast_cd: "CHARGEMENT RAPIDE", updates: "MISES À JOUR", frame_blend: "FONDU D'IMAGES",
       hd_build: "GRAPHISMES HD",
       internal_resolution: "RÉSOLUTION", aspect_ratio: "FORMAT", fullscreen: "MODE", vsync: "SYNCHRO",
       preset: "STYLE", hd_sprites: "PERSONNAGES HD", hd_levels: "DÉCORS HD", hd_hud: "INTERFACE HD",
@@ -180,7 +180,7 @@ const STR = {
     },
     pages: { general: "GENERAL", pause: "PAUSA", keys: "CONTROLES", video: "PANTALLA", gfx: "GRÁFICOS", filter: "FILTROS", sound: "SONIDO" },
     opt: {
-      language: "IDIOMA", volume: "VOLUMEN", fast_cd: "CARGA RÁPIDA", updates: "ACTUALIZACIONES",
+      language: "IDIOMA", volume: "VOLUMEN", fast_cd: "CARGA RÁPIDA", updates: "ACTUALIZACIONES", frame_blend: "FUSIÓN DE IMÁGENES",
       hd_build: "GRÁFICOS HD",
       internal_resolution: "RESOLUCIÓN", aspect_ratio: "FORMATO", fullscreen: "MODO", vsync: "SINCRONÍA",
       preset: "ESTILO", hd_sprites: "PERSONAJES HD", hd_levels: "ESCENARIOS HD", hd_hud: "MARCADORES HD",
@@ -226,7 +226,7 @@ const STR = {
     },
     pages: { general: "GENERALE", pause: "PAUSA", keys: "COMANDI", video: "SCHERMO", gfx: "GRAFICA", filter: "FILTRI", sound: "AUDIO" },
     opt: {
-      language: "LINGUA", volume: "VOLUME", fast_cd: "CARICAMENTO RAPIDO", updates: "AGGIORNAMENTI",
+      language: "LINGUA", volume: "VOLUME", fast_cd: "CARICAMENTO RAPIDO", updates: "AGGIORNAMENTI", frame_blend: "FUSIONE IMMAGINI",
       hd_build: "GRAFICA HD",
       internal_resolution: "RISOLUZIONE", aspect_ratio: "FORMATO", fullscreen: "MODALITÀ", vsync: "VSYNC",
       preset: "STILE", hd_sprites: "PERSONAGGI HD", hd_levels: "SCENARI HD", hd_hud: "INDICATORI HD",
