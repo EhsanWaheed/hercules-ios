@@ -69,6 +69,8 @@ def peek(c, x, y, w, h):
 
 
 def capture(args):
+    # needs a debug-tools build of the port and the debug client in
+    # tools/port_debug/ (dbg.py; not part of the public repo)
     sys.path.insert(0, str(HERE / "port_debug"))
     from dbg import C
     c = C(args.port)

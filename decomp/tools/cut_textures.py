@@ -8,7 +8,7 @@ palette (CLUT column) and a UV rectangle. Rectangles with the same page and
 palette that overlap or touch are merged, so a background piece drawn with
 several quads becomes one image (no seams after upscaling). Each piece is
 written as an RGBA PNG (palette index 0 = transparent) using the near,
-unfogged CLUT row, see docs/port_plan.md.
+unfogged CLUT row (fog: 31 depth rows, row = clamp(depth / 32, 1, 29)).
 
 OUT_DIR/<level>/manifest.json maps every file to its page, palette and
 rectangle -- the texture ID a port uses to find the replacement.
