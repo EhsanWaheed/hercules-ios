@@ -462,9 +462,11 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     feature("hercules.skip-intro", "skip-memcard", c.store.b("skip_memcard"));
     feature("hercules.skip-intro", "direct-start", new_game);
     t += "\n[feature.values]\nlevel = " + toml_str(level == "off" || level == "0" ? "1" : level) + "\n";
-    // Faster emulated CD: a level's ~2 MB load takes ~2 s instead of ~8 s.
-    // Measured on levels 2, 3, 8, 10; from 8x on the game's loader stalls.
-    feature("psx.enhancement.cd-speed", "cd-speed", c.store.b("fast_cd"));
+    // Faster emulated CD (4x: a level's ~2 MB in ~2 s instead of ~8 s) breaks
+    // the HD pack: the level textures (and sprite banks loaded mid-level) stay
+    // SD. Off for everyone, whatever launcher.ini says (0.4.0/0.5.0 stored
+    // fast_cd = true), until the texture tracking copes with it.
+    feature("psx.enhancement.cd-speed", "cd-speed", false);
     t += "\n[feature.values]\nmultiplier = \"4\"\n";
     // Crossfade the game's 25 fps to the display refresh (presentation only).
     const std::string blend = c.store.get("frame_blend");
@@ -894,7 +896,7 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
     std::vector<std::pair<std::string, std::string>> langs;
     for (const auto& l : kLangs) langs.push_back({l.code, std::string("=") + l.name});
     return {
-        {"general", {{"language", langs}, {"fast_cd", kOnOff}, {"updates", kOnOff}}},
+        {"general", {{"language", langs}, {"updates", kOnOff}}},
         {"video", {{"internal_resolution", {{"native", "native"}, {"720p", "=720P"}, {"1080p", "=1080P"},
                                             {"1440p", "=1440P"}, {"4k", "=4K"}}},
                    {"aspect_ratio", {{"4:3", "ratio43"}, {"16:9", "ratio169"}}},
