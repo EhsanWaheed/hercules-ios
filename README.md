@@ -112,9 +112,6 @@ redistribution), placed in `~/psx-decomp/models/` (or `$HERC_MODELS`):
 
 `decomp/tools/hd_pack_build.py` runs the same build from the command line.
 
-`decomp/docs/HANDOFF.md` is the running project log (German): current state,
-formats, how each mod hooks the game, and open tasks.
-
 ## Licenses
 
 The framework in `port/psxrecomp` and the patches against it are under the

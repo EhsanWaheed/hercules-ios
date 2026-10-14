@@ -2,8 +2,8 @@
 
 Stand 2026-10-12. Beschreibt, wie wir von der PS1-Fassung (SCES-00893) zu
 einem nativen Linux-Port in 1080p kommen, ohne die Spiellogik zu verändern.
-Ergänzt `docs/port_plan.md` (Grafik-Entscheidungen) und `docs/HANDOFF.md`
-(Stand). Quellen am Ende; Aussagen über fremde Projekte stammen aus einer
+Ergänzt `docs/port_plan.md` (Grafik-Entscheidungen).
+Quellen am Ende; Aussagen über fremde Projekte stammen aus einer
 Recherche vom 12.10.2026 und sollten vor einer Entscheidung selbst geprüft
 werden.
 
@@ -223,7 +223,7 @@ Prüft nebenbei die Zerlege-Logik, die der Port später braucht.
 
 ## Reihenfolge der nächsten Schritte
 
-1. ~~Emulator-Test mit HD-Sprites (oben)~~ – erledigt, Ergebnis in `HANDOFF.md` (3b).
+1. ~~Emulator-Test mit HD-Sprites (oben)~~ – erledigt.
 2. objdiff-Bericht einrichten (Phase 0).
 3. Ladeadressen + splat für ENGINE3, TITLE, OV0–OV11 (Phase 1).
 4. PsyQ-Signaturen (Phase 1.3).
