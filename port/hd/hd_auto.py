@@ -1,10 +1,26 @@
 #!/usr/bin/env python3
-"""The launcher's automatic HD build: everything from the player's own disc.
+"""The launcher's HD graphics: the ready pack for this disc, else built from it.
 
     hd_auto.py --disc GAME.cue --pack mods/texture-packs/SCES-00893 --data hd-build
                [--parent-pid PID]
 
-Runs in the Python that ships with the game (overlay_toolchain/python, standard
+First it looks for the finished pack of this PAL version (the --pack folder's
+name, e.g. SCES-00891) in the project's GitHub release "hd-packs", made by
+hercules/tools/hd_pack_release.py and listed with their SHA-256 in
+SHA256SUMS.txt there:
+  hd-<serial>-core.tar.xz   sprites + HUD + config.yaml
+  hd-<serial>-levels.tar    level textures (PNGs, no further compression)
+  hd-<serial>-from-<other>.tar.xz
+                            only what differs from the pack of <other>, used
+                            when that pack, from this same release, is already
+                            installed next to --pack (tens of MB instead of GB)
+They are downloaded and checked one by one, unpacked next to --pack and swapped
+in as a whole; hd-release.json in the pack says which release files it equals.
+Only the graphics come from there; movies, sound and everything else stay on
+the player's disc. HERC_HD_API overrides the release URL (tests).
+
+Without such an archive it builds the pack locally. That runs in the Python
+that ships with the game (overlay_toolchain/python, standard
 library only) and sets up, below --data, what the build needs, each piece from
 its official source and checked against a fixed SHA-256:
 
@@ -27,6 +43,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -71,6 +88,12 @@ MODELS = [
 ]
 # share of the whole run (the build itself: hours on a CPU)
 PHASES = [("python", 0.3), ("packages", 1.5), ("models", 0.4), ("build", 97.8)]
+DOWNLOAD_PHASES = [("download", 85.0), ("install", 15.0)]
+HD_API = os.environ.get("HERC_HD_API",
+                        "https://api.github.com/repos/obaidr1/hercules-recompiled/releases/tags/hd-packs")
+DOWNLOAD_FREE_GB = 4  # levels.tar ~1.3 + unpacked pack ~1.8, with room
+DIFF_FREE_GB = 1      # the difference to another pack; the rest is hard links
+MARKER = "hd-release.json"
 FREE_GB = 6          # python + packages ~1.2, downloads ~0.4, work tree ~2.5, pack ~0.7
 NO_WINDOW = 0x08000000 if WIN else 0     # CREATE_NO_WINDOW
 
@@ -82,19 +105,20 @@ class Failed(Exception):
 
 
 class Progress:
-    def __init__(self, path):
+    def __init__(self, path, phases=None):
         self.path = path
+        self.phases = phases or PHASES
         self.phase, self.part, self.eta = "", 0.0, None
 
     def set(self, phase, part=0.0, eta=None, state="running", error=None):
         self.phase, self.part, self.eta = phase, part, eta
         before = 0.0
-        for name, w in PHASES:
+        for name, w in self.phases:
             if name == phase:
                 break
             before += w
-        w = dict(PHASES).get(phase, 0.0)
-        total = sum(w for _, w in PHASES)
+        w = dict(self.phases).get(phase, 0.0)
+        total = sum(w for _, w in self.phases)
         frac = 1.0 if state == "done" else min(1.0, (before + w * part) / total)
         data = {"phase": phase, "fraction": round(frac, 4), "eta": eta, "state": state, "error": error,
                 "updated": int(time.time())}
@@ -154,6 +178,187 @@ def download(url, dst, digest, report):
         raise Failed("download", f"{url}: checksum mismatch")
     part.replace(dst)
     return dst
+
+
+def fetch_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "hercules-recompiled-hd",
+                                               "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def release_assets():
+    """{name: (url, sha256, size)} of the checked assets of the hd-packs release, or None."""
+    try:
+        rel = fetch_json(HD_API)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None                          # no release (yet): build locally
+        raise Failed("network", f"{HD_API}: {e}")
+    except OSError as e:
+        raise Failed("network", f"{HD_API}: {e}")
+    assets = {x["name"]: x for x in rel.get("assets", [])}
+    if "SHA256SUMS.txt" not in assets:
+        return None
+    req = urllib.request.Request(assets["SHA256SUMS.txt"]["browser_download_url"],
+                                 headers={"User-Agent": "hercules-recompiled-hd"})
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as r:
+            sums = r.read().decode("utf-8")
+    except OSError as e:
+        raise Failed("network", f"SHA256SUMS.txt: {e}")
+    digests = {line.split()[-1].lstrip("*"): line.split()[0].lower()
+               for line in sums.splitlines() if len(line.split()) >= 2}
+    return {n: (x["browser_download_url"], digests[n], x["size"]) for n, x in assets.items() if n in digests}
+
+
+def release_marker(serial, assets):
+    """What hd-release.json says for the full pack of serial in this release."""
+    return {"serial": serial, "core": assets[f"hd-{serial}-core.tar.xz"][1],
+            "levels": assets[f"hd-{serial}-levels.tar"][1]}
+
+
+def plan_download(pack, assets):
+    """(base pack or None, [asset names]) for pack, or None if the release lacks it.
+
+    A base is another pack next to this one whose hd-release.json matches this
+    release: then only the difference to it is needed, the smallest one wins.
+    """
+    serial = pack.name
+    full = [f"hd-{serial}-core.tar.xz", f"hd-{serial}-levels.tar"]
+    if not all(n in assets for n in full):
+        return None
+    best = None
+    for other in sorted(pack.parent.iterdir()) if pack.parent.is_dir() else []:
+        name = f"hd-{serial}-from-{other.name}.tar.xz"
+        if other.name == serial or name not in assets:
+            continue
+        try:
+            mark = json.loads((other / MARKER).read_text())
+            if mark != release_marker(other.name, assets):
+                continue
+        except (OSError, ValueError, KeyError):
+            continue
+        if best is None or assets[name][2] < assets[best[1]][2]:
+            best = (other, name)
+    return (best[0], [best[1]]) if best else (None, full)
+
+
+def link_tree(src, dst):
+    """dst = src as hard links (a copy where that fails). Installed packs are
+    only ever swapped as a whole, never written into, so sharing files is safe."""
+    for d, dirs, files in os.walk(src):
+        rel = Path(d).relative_to(src)
+        if rel == Path("."):
+            dirs[:] = [x for x in dirs if x != "dumps"]
+            files = [f for f in files if f != MARKER]
+        (dst / rel).mkdir(parents=True, exist_ok=True)
+        for f in files:
+            try:
+                os.link(Path(d) / f, dst / rel / f)
+            except OSError:
+                shutil.copy2(Path(d) / f, dst / rel / f)
+
+
+def unpack(path, dst, report):
+    """A .tar / .tar.xz from the release into dst. In a difference, copy.txt
+    (DEST<TAB>SOURCE, files already in dst) comes first, then remove.txt."""
+    root = os.path.normcase(str(dst.resolve())) + os.sep
+
+    def target(name):
+        t = (dst / name).resolve()
+        if not os.path.normcase(str(t)).startswith(root):
+            raise Failed("download", f"bad path in archive: {name}")
+        return t
+    size = path.stat().st_size
+    with open(path, "rb") as raw, \
+            tarfile.open(fileobj=raw, mode="r|xz" if path.name.endswith(".xz") else "r|") as t:
+        for n, m in enumerate(t):
+            if not m.isfile():
+                raise Failed("download", f"not a file in archive: {m.name}")
+            src = t.extractfile(m)
+            if m.name == "copy.txt":             # all sources linked before any is replaced
+                staged = []
+                for line in src.read().decode("utf-8").splitlines():
+                    if not line:
+                        continue
+                    d, s = line.split("\t")
+                    out = target(d)
+                    tmp = out.with_name(out.name + ".copy")
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    tmp.unlink(missing_ok=True)
+                    try:
+                        os.link(target(s), tmp)
+                    except OSError:
+                        shutil.copy2(target(s), tmp)
+                    staged.append((tmp, out))
+                for tmp, out in staged:
+                    os.replace(tmp, out)
+                continue
+            if m.name == "remove.txt":
+                for name in src.read().decode("utf-8").splitlines():
+                    if name:
+                        target(name).unlink(missing_ok=True)
+                continue
+            out = target(m.name)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.unlink(missing_ok=True)          # may be a hard link into the base pack
+            with open(out, "wb") as f:
+                shutil.copyfileobj(src, f)
+            if n % 500 == 0:
+                report(raw.tell() / size)
+
+
+def install_dir(src, pack):
+    """Swap the unpacked folder in as the pack, never leaving it half written."""
+    old = pack.with_name(pack.name + ".replaced")
+    if old.exists():
+        shutil.rmtree(old)
+    if pack.exists():
+        pack.rename(old)
+    src.rename(pack)
+    shutil.rmtree(old, ignore_errors=True)
+
+
+def phase_download(a, data, prog):
+    """The finished pack of this PAL version from the release; False if there is none."""
+    serial = a.pack.name
+    assets = release_assets()
+    found = plan_download(a.pack, assets) if assets else None
+    if found is None:
+        log(f"no ready pack for {serial}: building it from the disc")
+        return False
+    base, names = found
+    total = sum(assets[n][2] for n in names)
+    need = DIFF_FREE_GB if base else DOWNLOAD_FREE_GB
+    free = shutil.disk_usage(data).free / 2**30
+    if free < need:
+        raise Failed("disk", f"{free:.1f} GB free, {need} needed")
+    tmp = a.pack.with_name(a.pack.name + ".installing")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+    if base:
+        log(f"{serial}: only the difference to the installed {base.name}")
+        link_tree(base, tmp)
+    # each archive counts once for the download and a quarter for unpacking it
+    weight, done = 1.25 * total, 0
+    for name in names:
+        url, digest, size = assets[name]
+        path = download(url, data / "downloads" / name, digest,
+                        lambda f: prog.set("download", (done + f * size) / weight))
+        unpack(path, tmp, lambda f: prog.set("download", (done + size + 0.25 * f * size) / weight))
+        path.unlink()                            # keeps the disk need at one archive
+        done += 1.25 * size
+        log(f"{name}: {size / 2**20:.0f} MB unpacked")
+    prog.set("install", 0.5)
+    if not (tmp / "replacements").is_dir() or not (tmp / "config.yaml").exists():
+        raise Failed("download", "archives without config.yaml / replacements/")
+    (tmp / MARKER).write_text(json.dumps(release_marker(serial, assets)))
+    a.pack.parent.mkdir(parents=True, exist_ok=True)
+    install_dir(tmp, a.pack)
+    log(f"HD pack {serial} downloaded and installed ({total / 2**20:.0f} MB, {', '.join(names)})")
+    return True
 
 
 def run(cmd, logf, **kw):
@@ -358,6 +563,7 @@ def main():
     ap.add_argument("--pack", type=Path, required=True, help="texture pack folder to install to")
     ap.add_argument("--data", type=Path, required=True, help="work folder (several GB while it runs)")
     ap.add_argument("--parent-pid", type=int)
+    ap.add_argument("--no-download", action="store_true", help="always build from the disc")
     a = ap.parse_args()
     data = a.data.resolve()
     data.mkdir(parents=True, exist_ok=True)
@@ -377,6 +583,13 @@ def main():
     try:
         if not a.disc.exists():
             raise Failed("disc", str(a.disc))
+        if not a.no_download:
+            prog.phases = DOWNLOAD_PHASES
+            if phase_download(a, data, prog):
+                prog.set("install", 1.0, state="done")
+                shutil.rmtree(data / "downloads", ignore_errors=True)
+                return 0
+            prog.phases = PHASES
         if not (data / "python" / ".packages").exists() or not (data / "work").exists():
             free = shutil.disk_usage(data).free / 2**30
             if free < FREE_GB:
