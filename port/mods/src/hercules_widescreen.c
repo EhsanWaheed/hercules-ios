@@ -12,8 +12,13 @@
  * primitive pool, so their addresses change every frame; the helper's
  * closing `sw $a0, 0($s0)` is hooked and each packet built for the HUD
  * routine (ENGINE1 func_80049128 / func_80049D64, ENGINE3 func_800465B0) is
- * anchored to the left or right screen edge by its x. Other callers (menus)
- * stay centred.
+ * anchored to the left or right screen edge by the call that drew it: the
+ * right group is the few calls with a fixed x of 236 or more (the right
+ * emblem and its wing, and func_80049D64's strip at the bottom), everything
+ * else belongs to the health bar on the left. Deciding by x instead split the
+ * health bar once it grows (max health D_80035068 sets its length, up to 255
+ * px): its 64-px pieces at x 220/284 and its end cap at length + 65 went to
+ * the right edge (issue #5). Other callers (menus) stay centred.
  *
  * Backdrop: the far scenery (sky, distant forest, meadow) is a separate 2D
  * map of 16x16 cells (ENGINE1 func_8003D348, ENGINE3 func_8003C214; arg a0 =
@@ -31,26 +36,30 @@
 #include "hercules_addrs.h" /* per PAL version, hercules/tools/port_version.py */
 
 #define REG_S0 16
-#define REG_S5 21
 #define REG_SP 29
 #define REG_A0 4
 #define REG_GP 28
 #define REG_RA 31
 #define SW_A0_0_S0 0xAE040000u   /* sw $a0, 0x0($s0) */
-#define HUD_SPLIT_X 200          /* left cluster ends ~180, right starts 236 */
-
+/* Return addresses (minus the HUD routine's start) of the calls that draw the
+ * right group, read off the call sites (x set by `ori $a0, $zero, x`): x 278 /
+ * 279, 236 and 259, plus ENGINE1 func_80049D64 (x 188..271, y 224..230). The
+ * code is the same in every PAL release, only moved, so the offsets hold for
+ * all five. */
+#define MAX_RIGHT 4
 typedef struct {
     const char* name;
     uint32_t site;               /* the packet's closing tag store */
     uint32_t check_addr, check_word; /* GetClut call inside the helper */
     uint32_t hud_lo, hud_hi;     /* callers that draw the in-game HUD */
+    uint16_t right[MAX_RIGHT];   /* right-group call offsets, 0 = unused */
 } HudHelper;
 
 static const HudHelper k_helpers[] = {
     {"ENGINE1", HERC_E1_HUD_SITE, HERC_E1_HUD_CHECK_SITE, HERC_E1_HUD_CHECK_WORD,
-     HERC_E1_HUD_LO, HERC_E1_HUD_HI},
+     HERC_E1_HUD_LO, HERC_E1_HUD_HI, {0x042C, 0x04A0, 0x055C, 0x0CD8}},
     {"ENGINE3", HERC_E3_HUD_SITE, HERC_E3_HUD_CHECK_SITE, HERC_E3_HUD_CHECK_WORD,
-     HERC_E3_HUD_LO, HERC_E3_HUD_HI},
+     HERC_E3_HUD_LO, HERC_E3_HUD_HI, {0x03A8, 0x03D0, 0x048C, 0}},
 };
 #define HELPER_COUNT (sizeof(k_helpers) / sizeof(k_helpers[0]))
 
@@ -62,8 +71,10 @@ static void on_hud_sprite(struct CPUState* cpu, uint32_t address) {
     if (!h || psx_mod_read_word(h->check_addr) != h->check_word) return;
     const uint32_t ra = psx_mod_read_word(cpu->gpr[REG_SP] + 0x2Cu);
     if (ra < h->hud_lo || ra >= h->hud_hi) return;
-    const int16_t x = (int16_t)cpu->gpr[REG_S5];
-    psx_mod_anchor_hud_primitive(cpu->gpr[REG_S0], x < HUD_SPLIT_X ? -1 : +1);
+    int side = -1;
+    for (int i = 0; i < MAX_RIGHT; i++)
+        if (h->right[i] && ra - h->hud_lo == h->right[i]) side = +1;
+    psx_mod_anchor_hud_primitive(cpu->gpr[REG_S0], side);
     psx_mod_counter_add("hercules.widescreen.hud_anchor", 1);
 }
 
