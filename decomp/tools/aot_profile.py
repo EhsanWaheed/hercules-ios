@@ -17,12 +17,20 @@ Loader evidence: ENGINE1's level table (docs/level_format.md) points into the
 ENGINE1 overlays, and its overlay pointers are pinned with a words check.
 
     python3 tools/aot_profile.py ~/psx-decomp/HerculesRecomp/aot/overlays.json [--expected N]
+
+Other PAL versions (same code, moved; see tools/version_map.py): pass the
+version's extracted files, its address map and disc image, e.g.
+
+    python3 tools/aot_profile.py OUT.json --files files-eu \
+        --map versions/SCES-00891.map.json --game-id SCES-00891 \
+        --disc "disc-eu/Disney's Action Game featuring Hercules (Europe).bin"
 """
 import argparse
 import hashlib
 import json
 import re
 import struct
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,10 +38,23 @@ DISC_SHA256 = "0359cf0c126f20de455cd585b9637b4f6c235876026a3e665af0a0738f6aae05"
 ENGINES = ["engine1", "engine3", "title"]
 OVERLAYS = [f"ov{i}" for i in range(1, 12)]
 LEVEL_TABLE = 0x8006C228  # ENGINE1, 28 bytes per level
+FILES = ROOT / "files"     # --files: another version's extracted disc
+VMAP = None                # --map: tools/version_map.py output
+
+
+def moved(image, addr):
+    """The address in the selected version (identity for the German one)."""
+    if VMAP is None:
+        return addr
+    sys.path.insert(0, str(ROOT / "tools"))
+    from version_map import lookup
+    return lookup(VMAP, image, addr)
 
 
 def vram(name):
-    return int(re.search(r"vram: (0x[0-9A-Fa-f]+)", (ROOT / f"{name}.yaml").read_text())[1], 16)
+    """Load address of an overlay in the selected version (splat's is German)."""
+    base = int(re.search(r"vram: (0x[0-9A-Fa-f]+)", (ROOT / f"{name}.yaml").read_text())[1], 16)
+    return base + (VMAP["load_shift"][name] if VMAP else 0)
 
 
 def disc_name(name):
@@ -41,7 +62,7 @@ def disc_name(name):
 
 
 def image_range(name):
-    data = (ROOT / "files" / disc_name(name)).read_bytes()
+    data = (FILES / disc_name(name)).read_bytes()
     if name in ENGINES:
         return 0x80038350, 0x80038350 + len(data) - 0x800
     base = vram(name)
@@ -58,7 +79,8 @@ def asm_span(name):
 
 
 def data_exclusions(name):
-    data = (ROOT / "files" / disc_name(name)).read_bytes()
+    # overlays keep their layout in every version (tools/version_map.py)
+    data = (FILES / disc_name(name)).read_bytes()
     base = vram(name)
     lo, hi = asm_span(name)
     ranges = []
@@ -83,11 +105,12 @@ def address_taken(targets):
 
 
 def level_table_check():
-    data = (ROOT / "files/EX/ENGINE1.").read_bytes()
+    data = (FILES / "EX/ENGINE1.").read_bytes()
+    table = moved("engine1", LEVEL_TABLE)
     values = {}
     for level in range(12):
         for k in range(4, 7):
-            addr = LEVEL_TABLE + 28 * level + 4 * k
+            addr = table + 28 * level + 4 * k
             word = struct.unpack_from("<I", data, addr - 0x80038350 + 0x800)[0]
             if word:
                 values[f"{addr:#010x}"] = f"{word:#010x}"
@@ -99,13 +122,24 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("out", type=Path)
     ap.add_argument("--expected", type=int, default=0)
+    ap.add_argument("--files", type=Path, help="extracted disc of another version")
+    ap.add_argument("--map", type=Path, help="tools/version_map.py output for it")
+    ap.add_argument("--game-id", default="SCES-00893")
+    ap.add_argument("--disc", type=Path, help="disc image (.bin) to take the SHA-256 of")
     args = ap.parse_args()
+    global FILES, VMAP
+    if args.files:
+        FILES = args.files.resolve()
+    if args.map:
+        VMAP = json.loads(args.map.read_text())
+    disc_sha = hashlib.sha256(args.disc.read_bytes()).hexdigest() if args.disc else DISC_SHA256
     targets = json.loads((ROOT / "config/indirect_targets.json").read_text())
     taken = address_taken(targets)
     images = []
     for name in ENGINES + OVERLAYS:
         lo, hi = image_range(name)
-        entries = sorted(f"{a:#010x}" for a in taken[name] if lo <= a < hi and a % 4 == 0)
+        mapped = (moved(name, a) for a in taken[name])
+        entries = sorted(f"{a:#010x}" for a in mapped if a is not None and lo <= a < hi and a % 4 == 0)
         if name == "engine3":
             entries = []
         spec = dict(files=[disc_name(name)], entries=entries)
@@ -117,9 +151,9 @@ def main():
         images.append(spec)
     profile = {
         "schema": "psxrecomp AOT methods v1",
-        "game_id": "SCES-00893",
+        "game_id": args.game_id,
         "static_output": "generated/overlays_static.c",
-        "disc_hashes": {"sha256": DISC_SHA256},
+        "disc_hashes": {"sha256": disc_sha},
         "strict_bounds": True,
         "checks": [level_table_check()],
         "images": images,

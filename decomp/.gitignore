@@ -8,3 +8,13 @@ __pycache__/
 .splache
 permuter/
 tools/native/*.so
+disc-eu/
+files-eu/
+disc-fr/
+files-fr/
+disc-es/
+files-es/
+disc-it/
+files-it/
+# tools/version_map.py output (rebuilt in a second)
+versions/*.map.json

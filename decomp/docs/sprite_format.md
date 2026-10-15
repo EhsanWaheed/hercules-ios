@@ -143,7 +143,7 @@ and gp offsets differ:
 |---------|--------------|-------------|--------------|--------------|
 | ENGINE1 | `0x8003FD7C` | gp+0x290C   | `0x80072A6C` | `0x8004023C` |
 | ENGINE3 | `0x8003F18C` | gp+0x32C0   | `0x80066018` | `0x8003F64C` |
-| TITLE   | `0x8005418C` | gp+0x3ACC   | `0x8008BD58` | `0x8005464C` |
+| TITLE   | `0x8005418C` | gp+0x3ACC   | `0x8007BD58` | `0x8005464C` |
 
 (TITLE's queue count lives at gp+0x170 instead of gp+0x5C.) ENGINE3's draw
 function differs from ENGINE1's. Levels 2, 8 and 10 use ENGINE3 (u16 table

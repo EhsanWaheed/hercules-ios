@@ -161,6 +161,10 @@ def main():
             if i % 100 == 0:
                 print(f"  {i}/{len(jobs)}", flush=True)
     print(f"{sum(len(j[3]) for j in jobs)} images -> {args.pack / 'replacements/levels'}")
+    # rects.json: lets tools/pack_rekey.py carry these images to other PAL
+    # versions without this disc (a level block may differ in a few pixels)
+    from pack_rekey import describe
+    print(f"{describe(args.pack, ROOT / 'files')} level textures described for other versions")
 
 
 if __name__ == "__main__":

@@ -76,11 +76,15 @@ def to_float(img):
     return img.astype(np.float32) / 255.0 if img.dtype == np.uint8 else img.astype(np.float32)
 
 
+# CUDA when the Python has it (e.g. a rented GPU), else the CPU; float32 on both
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def run_whole(model, img):
-    x = torch.from_numpy(to_float(img).transpose(2, 0, 1)[None].copy())
+    x = torch.from_numpy(to_float(img).transpose(2, 0, 1)[None].copy()).to(DEVICE)
     with torch.no_grad():
         y = model(x)
-    return y[0].clamp(0, 1).numpy().transpose(1, 2, 0)
+    return y[0].clamp(0, 1).cpu().numpy().transpose(1, 2, 0)
 
 
 def run(model, img):
@@ -120,6 +124,7 @@ def main():
 
     def load(path):
         m = spandrel.ModelLoader().load_from_file(str(path))
+        m.to(DEVICE)
         m.eval()
         return m
     model = load(a.model)

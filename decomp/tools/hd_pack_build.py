@@ -2,7 +2,14 @@
 """Build the HD texture pack from the user's own disc, start to finish.
 
     python3 tools/hd_pack_build.py DISC.cue WORK_DIR [--install PACK_DIR]
-        [--models DIR] [--ml-python PY] [--progress FILE]
+        [--models DIR] [--ml-python PY] [--progress FILE] [--base PACK [--base-files DIR]]
+
+Any PAL version works (EN/FR/DE/IT/ES, tools/pal_versions.py). With --base,
+an existing pack (made for this or another version, by this tool or by
+hand) is carried over first (tools/pack_rekey.py) and only what it does not
+cover is upscaled (tools/pack_missing.py): for another language that is its
+text sprites and a few level textures, minutes instead of hours. Images from
+the base pack always win over new ones, so hand-made art is kept.
 
 Every step reads only the disc image and writes below WORK_DIR, so nothing
 of the game ships with the project. Steps (each skips work already done, so
@@ -49,7 +56,7 @@ BACK_VIEW = "SD3/S3_1"           # Hercules from behind (run levels): HDcube loo
 CHAIN = ["--fill", "all", "--alpha-threshold", "0.05"]
 
 # relative weight of each step (≈ share of the run time on a CPU)
-STEPS = [("extract", 0.2), ("sprites", 0.5), ("levels", 0.2), ("hud", 0.1),
+STEPS = [("extract", 0.2), ("sprites", 0.5), ("levels", 0.2), ("hud", 0.1), ("base", 0.3),
          ("upscale-sprites", 90.0), ("upscale-backview", 0.5), ("upscale-levels", 2.0),
          ("upscale-hud", 1.5), ("palettize", 3.0), ("cells", 1.0), ("pack-sprites", 1.5),
          ("pack-levels", 0.5), ("pack-hud", 0.3), ("install", 0.2)]
@@ -125,6 +132,9 @@ def main():
                     default=Path(sys.executable) if importlib.util.find_spec("torch")
                     else Path.home() / ".config/chaiNNer/python/python/bin/python3.11")
     ap.add_argument("--progress", type=Path)
+    ap.add_argument("--base", type=Path, help="existing pack to reuse (any PAL version)")
+    ap.add_argument("--base-files", type=Path,
+                    help="the base pack's disc files, if the pack has no replacements/levels/rects.json")
     a = ap.parse_args()
 
     for m in (DAT2, HDCUBE, ALPHA):
@@ -163,17 +173,39 @@ def main():
         run([py, HERE / "hud_texpack.py", "from-disc", W / "files", "--work", A / "hud"])
         prog.end()
 
+        prog.begin("base")
+        sprite_src, level_src, base = A / "sprites", A / "textures_cut", None
+        if a.base:
+            base = W / "pack.base"
+            if base.exists():
+                shutil.rmtree(base)
+            cmd = [py, HERE / "pack_rekey.py", "rekey", a.base, W / "files", base]
+            run(cmd + (["--source-files", a.base_files] if a.base_files else []), env=env)
+            run([py, HERE / "pack_missing.py", base, W / "missing.json"], env=env)
+            todo = json.loads((W / "missing.json").read_text())
+            sprite_src, level_src = A / "sprites_todo", A / "textures_todo"
+            for d, src, items in ((sprite_src, A / "sprites", todo["sprites"]),
+                                  (level_src, A / "textures_cut", todo["levels"])):
+                if d.exists():
+                    shutil.rmtree(d)
+                d.mkdir(parents=True)
+                for rel in items:
+                    (d / rel).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src / rel, d / rel)   # keep the date: upscaled ones are skipped
+        prog.end()
+
         watch = W / "upscale.progress.json"
         prog.begin("upscale-sprites")
-        run([*ml, a.models / DAT2, A / "sprites", A / "sprites_hd/raw", "--alpha-model", a.models / ALPHA,
+        run([*ml, a.models / DAT2, sprite_src, A / "sprites_hd/raw", "--alpha-model", a.models / ALPHA,
              *CHAIN, "--exclude", BACK_VIEW, "--progress", watch], watch=watch, prog=prog)
         prog.end()
         prog.begin("upscale-backview")
-        run([*ml, a.models / HDCUBE, A / "sprites", A / "sprites_hd/raw", "--alpha-model", a.models / ALPHA,
-             *CHAIN, "--only", BACK_VIEW, "--progress", watch], watch=watch, prog=prog)
+        if (sprite_src / BACK_VIEW).exists():
+            run([*ml, a.models / HDCUBE, sprite_src, A / "sprites_hd/raw", "--alpha-model", a.models / ALPHA,
+                 *CHAIN, "--only", BACK_VIEW, "--progress", watch], watch=watch, prog=prog)
         prog.end()
         prog.begin("upscale-levels")
-        run([*ml, a.models / HDCUBE, A / "textures_cut", A / "textures_hd", "--alpha-model", a.models / ALPHA,
+        run([*ml, a.models / HDCUBE, level_src, A / "textures_hd", "--alpha-model", a.models / ALPHA,
              *CHAIN, "--progress", watch], watch=watch, prog=prog)
         prog.end()
 
@@ -217,7 +249,9 @@ def main():
                 dst = new / "replacements/sprites" / f.relative_to(back / "replacements/sprites")
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(f, dst)
-        shutil.rmtree(back)
+        if back.exists():               # nothing to write (e.g. --base covers it)
+            shutil.rmtree(back)
+        new.mkdir(parents=True, exist_ok=True)
         prog.end()
         prog.begin("pack-levels")
         run([py, HERE / "level_texpack.py", A / "textures_cut", A / "textures_hd", new], env=env)
@@ -228,6 +262,25 @@ def main():
             "# Level textures key off one 384x512 upload; later partial writes must\n"
             "# only cut out what they overwrite instead of dropping the whole upload.\n"
             "MaxVRAMWriteSplits: 64\n", newline="\n")
+        if base:
+            # the reused pack wins: only names it lacks come from this run
+            added = 0
+            for f in sorted(new.joinpath("replacements").rglob("*.png")):
+                dst = base / "replacements" / f.relative_to(new / "replacements")
+                if not dst.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(f, dst)
+                    added += 1
+            shutil.copyfile(new / "config.yaml", base / "config.yaml")
+            shutil.rmtree(new)
+            new = base
+            sys.path.insert(0, str(HERE))
+            from pack_rekey import describe
+            describe(new, W / "files")
+            print(f"{added} new images added to the reused pack", flush=True)
+            # the reused pack's own-language text sprites cannot match this
+            # disc, and the loader refuses more than 262,144 files
+            run([py, HERE / "pack_missing.py", new, "--prune"], env=env)
         if pack.exists():
             shutil.rmtree(pack)
         new.rename(pack)

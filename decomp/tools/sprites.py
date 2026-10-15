@@ -18,12 +18,14 @@ from pathlib import Path
 ROOT = Path(os.environ.get("HERC_ROOT") or Path(__file__).resolve().parent.parent)
 ENGINE1 = ROOT / "files/EX/ENGINE1."
 ENGINE1_BASE = 0x80038350
-DIST_TABLE = 0x8006AB3B        # D_8006AB3B: back-reference distances
+# D_8006AB3B (German): back-reference distances; it moves per PAL version
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pal_versions import VERSIONS, detect  # noqa: E402
 
 
 def load_dist_table():
     exe = ENGINE1.read_bytes()
-    off = DIST_TABLE - ENGINE1_BASE + 0x800
+    off = VERSIONS[detect(ROOT / "files")]["dist_table"] - ENGINE1_BASE + 0x800
     return exe[off:off + 0x48]
 
 
