@@ -713,6 +713,13 @@ bool build_font(const std::vector<uint8_t>& stp, Font& font, std::string* error,
     }
     font.height = H;
     font.baseline = H - BOT;
+    int cap_top = -1, cap_bottom = -1;           // the capital A's rows
+    const auto [ax, aw] = font.glyphs.at(U'A');
+    for (int y = 0; y < font.yellow.h; ++y)
+        for (int x = ax; x < ax + aw; ++x)
+            if (font.yellow.at(x, y)[3]) { if (cap_top < 0) cap_top = y; cap_bottom = y; }
+    constexpr float kGermanCap = 13;
+    font.scale = cap_top < 0 ? 1 : std::min(1.0f, kGermanCap / float(cap_bottom - cap_top + 1));
     return true;
 }
 

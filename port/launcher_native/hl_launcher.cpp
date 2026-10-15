@@ -753,6 +753,7 @@ struct App {
         return it == art.font.glyphs.end() ? art.font.glyphs.at(U' ') : it->second;
     }
     int text_width(const std::string& s, float f = 1) const {
+        f *= art.font.scale;
         int w = 0;
         for (char32_t c : utf32(s)) w += glyph(c).second + 1;
         return int(std::max(0, w - 1) * f + 0.5f);
@@ -762,6 +763,7 @@ struct App {
         const Image& atlas = std::strcmp(color, "blue") == 0 ? art.font.blue
                            : std::strcmp(color, "orange") == 0 ? art.font.orange : art.font.yellow;
         const int w = text_width(s, f);
+        f *= art.font.scale;
         float cx = std::strcmp(align, "center") == 0 ? std::round(x - w / 2.0f)
                  : std::strcmp(align, "right") == 0 ? x - w : x;
         SDL_Texture* t = texture(atlas);
@@ -799,7 +801,7 @@ struct App {
                                            [](char ch) { return (unsigned char)ch >= 0x80; }) ? 3 : 0);
             text(lines[i], x, y + dy, color, "center");
         }
-        return dy + 15.0f + (art.font.height - 15);
+        return dy + 15.0f + (art.font.height * art.font.scale - 15);
     }
     // the game's German caption sprite, or the same words in the font
     void caption(const char* sprite, const std::string& key, float y, const char* color = "yellow") {
@@ -970,7 +972,7 @@ void LevelScreen::render(App& a) {
     auto sp = a.art.level_name.find(lv == "off" ? "1" : lv);
     if (a.disc_art() && sp != a.art.level_name.end()) {
         a.centered(sp->second, 134);
-        a.text(label, W / 2.0f, std::round(134 + sp->second.h - a.art.font.height + 15 + 6), "yellow", "center");
+        a.text(label, W / 2.0f, std::round(134 + sp->second.h - a.art.font.height * a.art.font.scale + 15 + 6), "yellow", "center");
     } else {
         const float h = a.text_block(a.level_name(lv), W / 2.0f, 130, "yellow", 200);
         a.text(label, W / 2.0f, 130 + h + 2, "yellow", "center");
@@ -1912,6 +1914,7 @@ const std::pair<int, int>& glyph(char32_t c) {
     return it == m.font.glyphs.end() ? m.font.glyphs.at(U' ') : it->second;
 }
 float text_width(const std::string& s, float f = 1) {
+    f *= m.font.scale;
     int w = 0;
     for (char32_t c : utf32(s)) w += glyph(c).second + 1;
     return std::max(0, w - 1) * f;
@@ -1920,6 +1923,7 @@ void text(const std::string& s, float x, float y, const char* color, const char*
     const Image& atlas = std::strcmp(color, "blue") == 0 ? m.font.blue
                        : std::strcmp(color, "orange") == 0 ? m.font.orange : m.font.yellow;
     const float tw = text_width(s, f);
+    f *= m.font.scale;
     float cx = std::strcmp(align, "center") == 0 ? x - tw / 2 : std::strcmp(align, "right") == 0 ? x - tw : x;
     for (char32_t c : utf32(s)) {
         const auto& g = glyph(c);

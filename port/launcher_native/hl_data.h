@@ -60,6 +60,9 @@ bool decode_sprites(const std::vector<uint8_t>& data, const std::vector<uint8_t>
 // game's yellow and orange plus a blue recolour, one row of glyphs.
 struct Font {
     int height = 0, baseline = 0;
+    // drawn at this size: the German pause font's capitals (13 px) set every
+    // layout; the English and Italian ones are 18 px, French and Spanish 15
+    float scale = 1;
     std::map<char32_t, std::pair<int, int>> glyphs;   // char -> (x, width) in the atlas
     Image yellow, orange, blue;
 };
