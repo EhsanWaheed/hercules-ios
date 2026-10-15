@@ -143,6 +143,10 @@ SCES-00893, en -00891, fr -00892, it -00894, es -00895. One build per release:
   pause menu's letters (EN larger, other order): `build_font(..., release)`
   has a row table per release and draws missing letters (F H J K W Z ...).
 - Sprite decoding needs ENGINE1's run-length table: `Release::dist_table`.
+- Widescreen: the `[widescreen.cull]` lists in the German `game.toml` (landscape
+  columns, object drawing) are moved per release by `tools/port_version.py`
+  like every other address (`TOML_LISTS`); a release then needs its overlays
+  translated again (AOT), since the widened tests are compiled in.
 - The game it starts gets `PSX_HL_HOME` (its in-game menu then uses the game
   folder's launcher.ini and HD packs) and `PSX_KEYBINDS_INI` (one keybinds.ini
   for all). The framework looks for `overlay_toolchain/` up to two folders
