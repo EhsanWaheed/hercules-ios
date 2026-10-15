@@ -514,7 +514,8 @@ def tie_children():
 
 def stop_all(*_):
     if not WIN:
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if threading.current_thread() is threading.main_thread():   # only there may it set handlers
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
             os.killpg(0, signal.SIGTERM)
         except OSError:
@@ -533,7 +534,15 @@ def watch_parent(pid):
             r = k.WaitForSingleObject(h, 0)
             k.CloseHandle(h)
             return r == 0x102                                 # WAIT_TIMEOUT: still running
-        return os.getppid() == pid
+        # not getppid(): SDL starts background processes through a double
+        # fork, so the launcher is never our parent
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        return True
 
     def loop():
         while alive():
