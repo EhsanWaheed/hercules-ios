@@ -74,6 +74,21 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 6 GB of free disk space while it runs; afterwards only the finished pack
 (in `mods/texture-packs/`) stays next to the program.
 
+## Good to know
+
+- **Frame rate.** As on the PlayStation, the game draws 25 pictures per
+  second (one every second PAL frame). On a 60 Hz screen they alternate
+  between two and three refreshes, which reads as a slight stutter; on a
+  50 Hz (or 100 Hz) screen every picture is shown for the same time.
+  Generated in-between frames (blending, optical flow, AI interpolation) were
+  tried and looked worse than the original pictures, so the game keeps its own.
+- **Widescreen.** In 16:9 the game draws the extra width itself: scenery,
+  far background and the HUD at the screen edges, and from 0.5.4 also the
+  characters and objects in the side margins.
+- **Problems?** Open an [issue](https://github.com/obaidr1/hercules-recompiled/issues)
+  with the version (shown in the launcher), your disc's ID (SCES-0089x),
+  Windows or Linux, and a screenshot if you can.
+
 ## Layout
 
 | Folder | What |
