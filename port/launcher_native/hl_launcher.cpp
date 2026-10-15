@@ -895,6 +895,10 @@ LevelScreen g_levels;
 OptionsScreen g_options;
 LoadScreen g_load;
 
+// Where the title menu's anchor lands on the 320x256 stage (the German
+// image, anchor 110,20, sat at 52,98).
+constexpr int kMenuAnchorX = 162, kMenuAnchorY = 118;
+
 void MainMenu::render(App& a) {
     a.draw(a.art.bg["menu"], 0, 0, W, H);
     auto muse = [&](std::vector<Image>& f, float x, float y, float fps, bool flip = false, int offset = 0) {
@@ -903,11 +907,20 @@ void MainMenu::render(App& a) {
     };
     muse(a.art.muse_a, 6, 100, 7); muse(a.art.muse_b, 40, 104, 6);
     muse(a.art.muse_c, 258, 100, 7); muse(a.art.muse_a, 224, 104, 5, true, 3);
+    // The disc's menu image (one per highlighted entry) goes where the game
+    // puts it: by its anchor, which sits elsewhere in every release's image
+    // (the words differ in width), so the left edge differs too.
     const bool de = a.disc_art() && a.art.menu.size() == 4;
-    if (de) a.draw(a.art.menu[sel], 52, 98);
+    float mx = 70, mw = 180;
+    if (de) {
+        const Image& m = a.art.menu[sel];
+        mx = float(kMenuAnchorX - m.ax);
+        mw = float(m.w);
+        a.draw(m, mx, float(kMenuAnchorY - m.ay));
+    }
     for (int i = 0; i < 4; ++i) {
         if (!de) a.text(a.T("menu." + std::to_string(i)), W / 2.0f, 101 + i * 26, i == sel ? "blue" : "orange", "center");
-        a.hit(70, 98 + i * 26, 180, 25, [this, i] { sel = i; }, [this, &a] { activate(a); });
+        a.hit(mx, 98 + i * 26, mw, 25, [this, i] { sel = i; }, [this, &a] { activate(a); });
     }
     const std::string lv = a.ctx.store.get("start_level");
     if (lv != "off") {

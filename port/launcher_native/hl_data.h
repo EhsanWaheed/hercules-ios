@@ -17,6 +17,7 @@ namespace hl {
 struct Image {
     int w = 0, h = 0;
     std::vector<uint8_t> rgba;          // w*h*4, straight alpha
+    int ax = 0, ay = 0;                 // a sprite frame's anchor (where the game places it) in the image
     bool empty() const { return w <= 0 || h <= 0; }
     uint8_t* at(int x, int y) { return &rgba[(size_t(y) * w + x) * 4]; }
     const uint8_t* at(int x, int y) const { return &rgba[(size_t(y) * w + x) * 4]; }

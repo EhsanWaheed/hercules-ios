@@ -319,6 +319,7 @@ bool decode_sprites(const std::vector<uint8_t>& data, const std::vector<uint8_t>
                     if (!idx) continue;
                     std::memcpy(img.at(p.x - xs0 + xx, p.y - ys0 + yy), &pal[idx * 4], 4);
                 }
+        img.ax = -xs0; img.ay = -ys0;
         out.frames[int(k + 1)] = std::move(img);
     }
     return true;
