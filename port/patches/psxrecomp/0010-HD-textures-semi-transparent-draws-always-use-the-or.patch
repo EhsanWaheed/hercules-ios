@@ -1,0 +1,47 @@
+From e1b5c405ef13b40ef3a80929b4bf32db9b3f800e Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 09:52:58 +0200
+Subject: [PATCH 10/10] HD textures: semi-transparent draws always use the
+ original texture
+
+Replacement PNGs lose the PlayStation's per-texel blending: in Hercules'
+Pegasus level the light rays turned into solid or empty bands. Semi-
+transparent draws now never take a replacement (ordinary or ST name); the
+F4 inspector says so for them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/gpu_hd_textures.cpp | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/runtime/src/gpu_hd_textures.cpp b/runtime/src/gpu_hd_textures.cpp
+index 65bbd7a..a75ca34 100644
+--- a/runtime/src/gpu_hd_textures.cpp
++++ b/runtime/src/gpu_hd_textures.cpp
+@@ -571,6 +571,10 @@ static int acquire_draw(uint16_t tp, uint16_t cx, uint16_t cy,
+     if (!make_query(tp, cx, cy, limits, window, query)) return 0;
+     dump_query(query, semi);
+     if (!session->replacements) return 0;
++    /* Semi-transparent draws always keep the original texture: replacement
++     * PNGs lose the PlayStation's per-texel blending (light rays, glows and
++     * flashes turned solid or vanished). */
++    if (semi) return 0;
+     auto lease = std::unique_ptr<Lease>(new (std::nothrow) Lease);
+     if (!lease) return 0;
+     if (session->beetle) {
+@@ -677,6 +681,12 @@ extern "C" int gpu_hd_textures_describe(uint16_t tp, uint16_t cx, uint16_t cy, c
+     std::array<DuckTextureMatch, 4> matches{};
+     size_t count = 0;
+     const int status = duck_texture_pack_match_parts(session->duck, &query, semi, matches.data(), matches.size(), &count);
++    if (status == HD_TEXTURE_LOOKUP_FOUND && count && semi) {
++        const char* path = matches[0].replacement_path ? matches[0].replacement_path : "?";
++        const char* rel = std::strstr(path, "/replacements/");
++        std::snprintf(out, cap, "SD (semi-transparent: always the original)\npack has %s", rel ? rel + 14 : path);
++        return 1;
++    }
+     if (status == HD_TEXTURE_LOOKUP_FOUND && count) {
+         int n = 0;
+         for (size_t i = 0; i < count && n >= 0 && size_t(n) < cap; ++i) {
+-- 
+2.56.0
+

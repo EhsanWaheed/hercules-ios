@@ -81,7 +81,7 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 | [`decomp/`](decomp) | Decompilation of the main executable and the overlays (splat + GCC 2.7.2 / maspsx, byte-identical rebuild), file-format notes (levels, sprites, videos), tools for extraction, HD upscaling and texture packs |
 | [`port/`](port) | The PC port, built on [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp): game configuration, game-specific mods (HD sprites, widescreen, level select, skip intro / direct start) and the launcher |
 | `port/psxrecomp` | Submodule: the upstream framework |
-| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Eight framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames) |
+| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Ten framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames; freezing the F4 inspector's picture to mark objects; semi-transparent draws keeping the original texture) |
 
 ## Getting started
 
