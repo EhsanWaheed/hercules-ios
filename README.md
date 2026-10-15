@@ -1,7 +1,7 @@
 # Hercules Recompiled
 
 A native PC (Windows and Linux) port of the 1997 PlayStation action game *Disney's
-Hercules* (PAL, German release **SCES-00893**), plus the decompilation work
+Hercules* (all five PAL releases: English, French, German, Italian, Spanish), plus the decompilation work
 behind it. The game logic runs unchanged as statically recompiled code; only
 the platform layer is replaced: 1080p, true 16:9, HD sprites, level textures
 and HUD, a CRT simulation, save states, and a launcher styled after the
@@ -14,6 +14,9 @@ image at build or run time, and everything made from it (extracted files,
 disassembly, HD texture packs, launcher artwork) stays out of git. The
 prebuilt downloads contain the game's program code translated to x86-64, but
 no graphics, sound, video or level data: those still come from your disc.
+The optional HD texture packs (upscaled from the game's graphics) are
+published separately as the [hd-packs](https://github.com/obaidr1/hercules-recompiled/releases/tag/hd-packs)
+release; the launcher can also make them from your disc instead.
 
 Fan project, not affiliated with or endorsed by Disney or Sony.
 
@@ -30,10 +33,11 @@ Checksums and release notes: [latest release](https://github.com/obaidr1/hercule
 
 1. Unzip into a folder of its own (the archive has no top-level folder).
 2. Start `Hercules_Recompiled.exe` (Windows) or `./Hercules_Recompiled` (Linux).
-3. On first start, pick your disc image: the `.cue` of a dump of the
-   **German PAL release SCES-00893** (Redump: *Disneys Hercules
-   Action-Spiel (Germany)*, `.cue` + `.bin`). The choice is remembered in
-   `disc.cfg` next to the program.
+3. On first start, pick your disc image: the `.cue` of a dump of one of the
+   **PAL releases** SCES-00891 (English), -00892 (French), -00893 (German),
+   -00894 (Italian) or -00895 (Spanish), `.cue` + `.bin`. The launcher's
+   language picks the release; it asks for that release's disc and remembers
+   it (`disc.cfg`, `disc-<id>.cfg`) next to the program.
 4. Choose a level in the launcher. Keyboard, mouse and gamepads work; F11
    toggles fullscreen.
 5. In the game, **Esc** (gamepad: **Select + Start**) opens the menu:
@@ -49,13 +53,18 @@ saves, the disc path and the HD graphics stay. *Options → General → Auto
 updates* turns the check off. Coming from 0.4.0 or older: unzip the new
 download over your existing folder once, so your HD graphics and saves stay.
 
-**HD graphics are made on your PC, from your disc.** After your first game
-the launcher starts building them in the background, at low priority:
-about 4 hours on a laptop CPU, while you play in the original graphics.
-The progress shows on the main menu and under *Options → Graphics → HD
-graphics* (select it to pause or resume). It stops when you close the
-launcher and continues on the next start; once done, HD is switched on.
-For this it downloads, once, about 400 MB from the official sources, each
+**HD graphics are downloaded after your first game** (from 0.5.1 on): the
+launcher fetches the pack for your release from the
+[hd-packs](https://github.com/obaidr1/hercules-recompiled/releases/tag/hd-packs)
+release in the background, about 1.6 GB, checked against SHA256SUMS.txt; a
+second language then only needs the difference, a few to 40 MB. The
+progress shows on the main menu and under *Options → Graphics → HD
+graphics*; once done, HD is switched on.
+
+If that release has no pack for your disc, the launcher **makes the pack on your PC,
+from your disc**, at low priority: about 4 hours on a laptop CPU, while you
+play in the original graphics. It stops when you close the launcher and
+continues on the next start. For this it downloads, once, about 400 MB from the official sources, each
 checked against a fixed SHA-256: a portable Python
 ([python-build-standalone](https://github.com/astral-sh/python-build-standalone)),
 PyTorch (CPU), [spandrel](https://github.com/chaiNNer-org/spandrel) and
@@ -72,13 +81,14 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 | [`decomp/`](decomp) | Decompilation of the main executable and the overlays (splat + GCC 2.7.2 / maspsx, byte-identical rebuild), file-format notes (levels, sprites, videos), tools for extraction, HD upscaling and texture packs |
 | [`port/`](port) | The PC port, built on [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp): game configuration, game-specific mods (HD sprites, widescreen, level select, skip intro / direct start) and the launcher |
 | `port/psxrecomp` | Submodule: the upstream framework |
-| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Five framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1) |
+| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Eight framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames) |
 
 ## Getting started
 
-Only the **German PAL release (SCES-00893)** works: the port, its mods and
-the HD pack are tied to that exact disc. US, Japanese and other PAL versions
-are not supported. Tested on Linux (Fedora) and Windows (Wine);
+The five **PAL releases** (SCES-00891 to -00895) work: the root of `port/`
+builds the German one, `port/versions/<id>/` each of the others
+(`cmake -S versions/<id> -B build-<id>`). US and Japanese versions are not
+supported. Tested on Linux (Fedora) and Windows (Wine);
 `port/scripts/build_windows.sh` cross-builds the Windows release with MinGW-w64.
 
 Needs GCC/G++, CMake ≥ 3.20, Ninja, pkg-config, git, Python 3 with numpy and
