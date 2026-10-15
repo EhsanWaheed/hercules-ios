@@ -102,14 +102,16 @@ TOML_LISTS = {
                               ("engine1", 0x8003D3B0), ("engine1", 0x8003D420), ("engine1", 0x8003D4AC),
                               ("engine1", 0x8003D5F4), ("engine3", 0x8003C27C), ("engine3", 0x8003C2EC),
                               ("engine3", 0x8003C378), ("engine3", 0x8003C4C0)],
-    "screen_x_sites": [("engine1", 0x800461C0), ("engine1", 0x80046850)],
+    "screen_x_sites": [("engine1", 0x800461C0), ("engine1", 0x80046850),
+                       ("engine1", 0x8003E6C8), ("engine3", 0x8003DAA8)],
     "slti_sites": [("engine1", 0x80046260), ("engine3", 0x80042FE4), ("engine3", 0x800432C4),
                    ("engine3", 0x800445E8), ("engine3", 0x80042FB4), ("engine3", 0x80042FC8),
                    ("engine3", 0x80043294), ("engine3", 0x800432A8), ("engine3", 0x800445B8),
-                   ("engine3", 0x800445CC)],
+                   ("engine3", 0x800445CC), ("engine1", 0x80044AD0), ("engine3", 0x800416F8)],
     "slti_lower_sites": [("engine3", 0x80042FFC), ("engine3", 0x800432DC), ("engine3", 0x80044600)],
     "bgez_sites": [("engine1", 0x8004627C), ("engine3", 0x80042FB0), ("engine3", 0x80043290),
                    ("engine3", 0x800445B4)],
+    "bltz_sites": [("engine1", 0x80044AB0), ("engine3", 0x800416D8)],
 }
 
 
