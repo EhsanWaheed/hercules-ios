@@ -32,6 +32,7 @@ them back. They are kept in `keybinds.ini` next to the game.
 | Numpad + / − | – | Volume |
 | F | – | Frames per second in the window title |
 | F3 / F4 | – | Statistics / texture inspector (for debugging) |
+| F5 (with F4 on) | – | Freeze the picture: wheel or Tab steps through the objects under the mouse, a click marks one (saved to `texture_marks.txt`), F5 or Esc goes on |
 
 In the menu: Up/Down choose a line, Left/Right change it (on the top line:
 change the page), Enter or ✕ select, Esc or △ / ○ / Start close.
