@@ -1,0 +1,46 @@
+From 466d232fb03c864ec3e0932bc7a29315b3d2e3f7 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 08:06:38 +0200
+Subject: [PATCH 7/8] Debug server: shutdown() the sockets so quitting does not
+ hang on Linux
+
+close() alone does not wake a thread blocked in accept() on Linux, so the
+join hung every quit from the in-game menu.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/debug_server.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/runtime/src/debug_server.c b/runtime/src/debug_server.c
+index cc4bcc7..ddb6d47 100644
+--- a/runtime/src/debug_server.c
++++ b/runtime/src/debug_server.c
+@@ -17071,9 +17071,24 @@ void debug_server_shutdown(void)
+      * blocking accept(), then join. */
+     s_io_running = 0;
+     if (s_listen != SOCK_INVALID) {
++        /* On Linux close() alone does not wake a thread blocked in accept()
++         * (the join below then hung every quit from the in-game menu);
++         * shutdown() does, and is harmless where close() already would. */
++#ifdef _WIN32
++        shutdown(s_listen, SD_BOTH);
++#else
++        shutdown(s_listen, SHUT_RDWR);
++#endif
+         sock_close(s_listen);
+         s_listen = SOCK_INVALID;
+     }
++    if (s_client != SOCK_INVALID) {          /* a connected client: wake its recv() too */
++#ifdef _WIN32
++        shutdown(s_client, SD_BOTH);
++#else
++        shutdown(s_client, SHUT_RDWR);
++#endif
++    }
+     if (s_io_thread) {
+         if (s_io_mutex) { SDL_LockMutex(s_io_mutex); SDL_CondSignal(s_io_resp_cv); SDL_UnlockMutex(s_io_mutex); }
+         SDL_WaitThread(s_io_thread, NULL);
+-- 
+2.56.0
+

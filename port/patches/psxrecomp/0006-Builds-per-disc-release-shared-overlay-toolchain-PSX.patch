@@ -1,0 +1,114 @@
+From b5bc9c6f43876a3593bc33c41edd337081f4c9d7 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 08:06:38 +0200
+Subject: [PATCH 6/8] Builds per disc release: shared overlay toolchain,
+ PSX_KEYBINDS_INI
+
+A title with one build per disc release keeps the extra builds in
+<game>/lang/<id>/; they find the main folder's overlay_toolchain up to two
+levels above the exe. PSX_KEYBINDS_INI points the keyboard bindings at a
+shared file.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/main.cpp          | 11 ++++++++++-
+ runtime/src/psx_bios_module.c |  5 +++++
+ runtime/src/psx_keybinds.c    | 23 +++++++++++++++++------
+ 3 files changed, 32 insertions(+), 7 deletions(-)
+
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 72129c8..fcd228c 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -17403,7 +17403,16 @@ int main(int argc, char** argv) {
+          * dev box and tcc shards on a toolchain-less player box. */
+         extern int g_psx_cps_mode;
+         const std::filesystem::path tk_xd = exe_dir_from_argv(argv[0]);
+-        const std::filesystem::path tk_dir = tk_xd / "overlay_toolchain";
++        /* An extra build of a title with one build per disc release lives in
++         * <game>/lang/<id>/ and shares the main folder's bundle. */
++        std::filesystem::path tk_dir = tk_xd / "overlay_toolchain";
++        {
++            std::error_code tk_ec;
++            const std::filesystem::path shared = tk_xd / ".." / ".." / "overlay_toolchain";
++            if (!std::filesystem::is_directory(tk_dir, tk_ec) &&
++                std::filesystem::is_directory(shared, tk_ec))
++                tk_dir = shared.lexically_normal();
++        }
+         /* The bundle's layout is identical on every platform; only the file
+          * NAMES differ. These were hardcoded to the Windows spellings
+          * ("python/python.exe", "psxrecomp-game.exe", "tcc/tcc.exe"), so on
+diff --git a/runtime/src/psx_bios_module.c b/runtime/src/psx_bios_module.c
+index acd0990..a3089b8 100644
+--- a/runtime/src/psx_bios_module.c
++++ b/runtime/src/psx_bios_module.c
+@@ -129,7 +129,12 @@ typedef struct {
+ static int probe_toolchain(const char *exe_dir, BmToolchain *tk) {
+     memset(tk, 0, sizeof(*tk));
+     if (!exe_dir || !exe_dir[0]) return 0;
++    /* A title with one build per disc release keeps the extra builds in
++     * subfolders (<game>/lang/<id>/) that share the main folder's bundle, so
++     * the toolchain may sit up to two levels above the exe (see main.cpp). */
+     snprintf(tk->dir, sizeof(tk->dir), "%s/overlay_toolchain", exe_dir);
++    if (!dir_exists(tk->dir)) snprintf(tk->dir, sizeof(tk->dir), "%s/../../overlay_toolchain", exe_dir);
++    if (!dir_exists(tk->dir)) snprintf(tk->dir, sizeof(tk->dir), "%s/overlay_toolchain", exe_dir);
+ #if defined(_WIN32)
+     snprintf(tk->python, sizeof(tk->python), "%s/python/python.exe", tk->dir);
+     snprintf(tk->emitter, sizeof(tk->emitter), "%s/psxrecomp-bios.exe", tk->dir);
+diff --git a/runtime/src/psx_keybinds.c b/runtime/src/psx_keybinds.c
+index 7401957..b46c2a1 100644
+--- a/runtime/src/psx_keybinds.c
++++ b/runtime/src/psx_keybinds.c
+@@ -11,6 +11,10 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <sys/stat.h>
++#ifndef S_ISDIR
++#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
++#endif
+ #include <ctype.h>
+ #include <stddef.h>
+ 
+@@ -187,17 +191,18 @@ static void derive_ini_path(const char *exe_path) {
+     for (const char *p = exe_path; *p; p++)
+         if (*p == '/' || *p == '\\') slash = p;
+ 
+-    /* Heuristic: a path ending in a separator, or with no extension in the last
+-     * component, is treated as a directory; otherwise strip the file name. */
++    /* A path ending in a separator, or naming an existing directory, is the
++     * directory; otherwise strip the file name. (An extension test alone took
++     * a Linux exe without ".exe" for a directory and saved into nowhere.) */
+     size_t len = strlen(exe_path);
+     int ends_sep = (exe_path[len-1] == '/' || exe_path[len-1] == '\\');
+-    const char *last = slash ? slash + 1 : exe_path;
+-    int has_ext = strchr(last, '.') != NULL;
++    struct stat st;
++    int is_file = !(stat(exe_path, &st) == 0 && S_ISDIR(st.st_mode));
+ 
+     char dir[1024];
+     if (ends_sep) {
+         snprintf(dir, sizeof(dir), "%s", exe_path);
+-    } else if (!has_ext) {
++    } else if (!is_file) {
+         /* directory path without trailing sep */
+         snprintf(dir, sizeof(dir), "%s/", exe_path);
+     } else if (slash) {
+@@ -326,7 +331,13 @@ static void load_ini(const char *path) {
+ /* ── Public API ───────────────────────────────────────────────────────────── */
+ 
+ void psx_keybinds_init(const char *exe_path) {
+-    derive_ini_path(exe_path);
++    /* PSX_KEYBINDS_INI: one file for several builds of a title (a launcher
++     * that starts the build matching the player's disc release). */
++    const char *shared = getenv("PSX_KEYBINDS_INI");
++    if (shared && *shared && strlen(shared) < sizeof(s_ini_path))
++        snprintf(s_ini_path, sizeof(s_ini_path), "%s", shared);
++    else
++        derive_ini_path(exe_path);
+     FILE *test = fopen(s_ini_path, "r");
+     if (test) { fclose(test); load_ini(s_ini_path); }
+     else       write_ini(s_ini_path);
+-- 
+2.56.0
+

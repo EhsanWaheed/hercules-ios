@@ -1,0 +1,188 @@
+From 9844180a27d4c32f0e58c6b0d6b904693f32a078 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 08:06:38 +0200
+Subject: [PATCH 8/8] Frame interpolation: CRT simulation on the blended image
+
+The interpolation pass now runs the same CRT beams as the present pass,
+sampling the blend of the two frames, and its scanline pitch follows the
+native line count instead of the capture texture's size.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/gpu_gl_renderer.c | 73 ++++++++++++++++++++++++++---------
+ 1 file changed, 54 insertions(+), 19 deletions(-)
+
+diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
+index d244963..6e4e5f8 100644
+--- a/runtime/src/gpu_gl_renderer.c
++++ b/runtime/src/gpu_gl_renderer.c
+@@ -643,12 +643,15 @@ static GLint         s_interp_uAlpha = -1, s_interp_uUvRect = -1;
+ static GLint         s_interp_uBlendMode = -1, s_interp_uGamma = -1;
+ static GLint         s_interp_uScanline = -1, s_interp_uScanStrength = -1;
+ static GLint         s_interp_uScanLines = -1, s_interp_uScanScale = -1;
++static GLint         s_interp_uCrt = -1, s_interp_uCrtPx = -1;
++static GLint         s_interp_uCrtMask = -1, s_interp_uCrtBloom = -1;
+ static int           s_interp_enabled = 0, s_interp_valid = 0;
+ static int           s_interp_suspended = 0;
+ static int           s_interp_blend_mode = 0;
+ static int           s_interp_prev = 0, s_interp_cur = 0;
+ static int           s_interp_w = 0, s_interp_h = 0, s_interp_linear = 0;
+ static int           s_interp_src_w = 0, s_interp_src_h = 0; /* source band, S px */
++static int           s_interp_nat_w = 0, s_interp_nat_h = 0; /* the same, native px */
+ static GLuint        s_interp_fbo = 0;   /* draw target of a scaled capture */
+ static int           s_interp_force_4_3 = 0, s_interp_source_path = -1;
+ static uint64_t      s_interp_swaps = 0;
+@@ -1693,7 +1696,9 @@ double gl_renderer_post_aa_gpu_us(void) {
+  * three output rows, bloom from a ring of blurred taps, and out-of-range
+  * colours desaturated toward their luma instead of clipped. u_crt_px is one
+  * native pixel in v_uv units; the beam sharpness follows u_scanline_strength.
+- * The mask fades in from 2 to 3 output pixels per native line. */
++ * The mask fades in from 2 to 3 output pixels per native line. The including
++ * shader declares u_uv_rect and defines vec3 crt_src(vec2 uv), the image the
++ * beams sample (the present texture, or the blend of two frames). */
+ #define PSX_CRT_FUNC \
+     "uniform int   u_crt;\n" \
+     "uniform vec2  u_crt_px;\n" \
+@@ -1701,7 +1706,7 @@ double gl_renderer_post_aa_gpu_us(void) {
+     "uniform float u_crt_bloom;\n" \
+     "vec3 crt_tap(vec2 uv){\n" \
+     "  vec2 lo = min(u_uv_rect.xy, u_uv_rect.zw), hi = max(u_uv_rect.xy, u_uv_rect.zw);\n" \
+-    "  vec3 c = texture(u_tex, clamp(uv, lo, hi)).rgb;\n" \
++    "  vec3 c = crt_src(clamp(uv, lo, hi));\n" \
+     "  return c * c;\n" \
+     "}\n" \
+     "vec3 psx_crt(vec2 uv){\n" \
+@@ -1787,6 +1792,7 @@ static const char *PRESENT_FS =
+     "  return r;\n"
+     "}\n"
+     PSX_SCANLINE_FUNC
++    "vec3 crt_src(vec2 uv){ return texture(u_tex, uv).rgb; }\n"
+     PSX_CRT_FUNC
+     /* Area resolve (u_sharp == 3) for a supersampled source larger than the
+      * output: average the whole footprint of the output pixel instead of one
+@@ -1864,10 +1870,11 @@ static const char *INTERP_FS =
+     "#version 330\n"
+     "in vec2 v_uv; uniform sampler2D u_prev; uniform sampler2D u_curr;\n"
+     "uniform float u_alpha; uniform int u_blend_mode; uniform float u_gamma; out vec4 frag;\n"
++    "uniform vec4 u_uv_rect;\n"
+     PSX_SCANLINE_UNIFORMS
+     PSX_SCANLINE_FUNC
+-    "void main(){\n"
+-    "  vec4 prev=texture(u_prev,v_uv), curr=texture(u_curr,v_uv);\n"
++    "vec4 blend_at(vec2 uv){\n"
++    "  vec4 prev=texture(u_prev,uv), curr=texture(u_curr,uv);\n"
+     "  float alpha=u_alpha;\n"
+     "  if(u_blend_mode==1){\n"
+     "    vec3 d=abs(prev.rgb-curr.rgb);\n"
+@@ -1875,7 +1882,19 @@ static const char *INTERP_FS =
+     "    float safe_blend=1.0-smoothstep(0.08,0.20,change);\n"
+     "    alpha=mix(step(0.5,u_alpha),u_alpha,safe_blend);\n"
+     "  }\n"
+-    "  vec4 c=mix(prev,curr,alpha);\n"
++    "  return mix(prev,curr,alpha);\n"
++    "}\n"
++    /* The CRT beams sample the blended image, so it stays one pass. */
++    "vec3 crt_src(vec2 uv){ return blend_at(uv).rgb; }\n"
++    PSX_CRT_FUNC
++    "void main(){\n"
++    "  vec4 c=blend_at(v_uv);\n"
++    "  if (u_crt != 0 && u_scanline != 0) {\n"
++    "    c.rgb = psx_crt(v_uv);\n"
++    "    if (u_gamma > 0.0 && u_gamma != 1.0) c.rgb = pow(max(c.rgb, vec3(0.0)), vec3(1.0 / u_gamma));\n"
++    "    frag = c;\n"
++    "    return;\n"
++    "  }\n"
+     "  c.rgb=psx_scanline(c.rgb, v_uv.y);\n"
+     "  if (u_gamma > 0.0 && u_gamma != 1.0) c.rgb=pow(max(c.rgb, vec3(0.0)), vec3(1.0/u_gamma));\n"
+     "  frag=c;\n"
+@@ -5684,18 +5703,25 @@ static void present_set_scanline(GLint uOn, GLint uStr, GLint uLines,
+     if (uLines >= 0) p_glUniform1f(uLines, pitch_lines);
+     if (uScale >= 0) p_glUniform1f(uScale, (float)out_h / (float)disp_lines);
+ }
+-/* CRT uniforms for the present program; px_w/px_h are the source texture's
+- * extent in native pixels (v_uv units per native pixel = 1/extent). Zero
+- * turns it off, as for OSD, bezel and already-composed images. */
+-static void present_set_crt(float px_w, float px_h) {
+-    if (s_present_uCrt < 0) return;
++/* CRT uniforms for the present or interpolation program; px_w/px_h are the
++ * source texture's extent in native pixels (v_uv units per native pixel =
++ * 1/extent). Zero turns it off, as for OSD, bezel and already-composed images. */
++static void crt_set_uniforms(GLint uOn, GLint uPx, GLint uMask, GLint uBloom,
++                             float px_w, float px_h) {
++    if (uOn < 0) return;
+     const int on = s_crt_on && px_w > 0.0f && px_h > 0.0f;
+-    p_glUniform1i(s_present_uCrt, on);
++    p_glUniform1i(uOn, on);
+     if (!on) return;
+-    if (s_present_uCrtPx >= 0) p_glUniform2f(s_present_uCrtPx, 1.0f / px_w, 1.0f / px_h);
+-    if (s_present_uCrtMask >= 0) p_glUniform1f(s_present_uCrtMask, s_crt_mask);
+-    if (s_present_uCrtBloom >= 0) p_glUniform1f(s_present_uCrtBloom, s_crt_bloom);
+-}
++    if (uPx >= 0) p_glUniform2f(uPx, 1.0f / px_w, 1.0f / px_h);
++    if (uMask >= 0) p_glUniform1f(uMask, s_crt_mask);
++    if (uBloom >= 0) p_glUniform1f(uBloom, s_crt_bloom);
++}
++#define present_set_crt(px_w, px_h)                                         \
++    crt_set_uniforms(s_present_uCrt, s_present_uCrtPx, s_present_uCrtMask,  \
++                     s_present_uCrtBloom, (px_w), (px_h))
++#define INTERP_CRT(px_w, px_h)                                              \
++    crt_set_uniforms(s_interp_uCrt, s_interp_uCrtPx, s_interp_uCrtMask,     \
++                     s_interp_uCrtBloom, (px_w), (px_h))
+ #define PRESENT_SCANLINE(pitch, disp, oh)                                   \
+     present_set_scanline(s_present_uScanline, s_present_uScanStrength,      \
+                          s_present_uScanLines, s_present_uScanScale,        \
+@@ -6403,6 +6429,10 @@ int gl_renderer_init_context(SDL_Window *win) {
+                 p_glGetUniformLocation(s_interp_prog, "u_scanline_lines");
+             s_interp_uScanScale =
+                 p_glGetUniformLocation(s_interp_prog, "u_scanline_scale");
++            s_interp_uCrt = p_glGetUniformLocation(s_interp_prog, "u_crt");
++            s_interp_uCrtPx = p_glGetUniformLocation(s_interp_prog, "u_crt_px");
++            s_interp_uCrtMask = p_glGetUniformLocation(s_interp_prog, "u_crt_mask");
++            s_interp_uCrtBloom = p_glGetUniformLocation(s_interp_prog, "u_crt_bloom");
+             s_interp_uPrev = p_glGetUniformLocation(s_interp_prog, "u_prev");
+             s_interp_uCurr = p_glGetUniformLocation(s_interp_prog, "u_curr");
+             s_interp_uAlpha = p_glGetUniformLocation(s_interp_prog, "u_alpha");
+@@ -7427,6 +7457,7 @@ static void interp_reset_history_unlocked(void) {
+     s_interp_valid = 0;
+     s_interp_w = s_interp_h = 0;
+     s_interp_src_w = s_interp_src_h = 0;
++    s_interp_nat_w = s_interp_nat_h = 0;
+     s_interp_source_path = -1;
+     frame_interpolation_schedule_reset(&s_interp_schedule);
+     frame_flip_tracker_reset(&s_interp_flip);
+@@ -7543,6 +7574,7 @@ static int interp_capture(GLuint fbo, int x, int y, int w, int h,
+     int geometry_changed =
+         pw != s_interp_w || ph != s_interp_h ||
+         sw != s_interp_src_w || sh != s_interp_src_h ||
++        w != s_interp_nat_w || h != s_interp_nat_h ||
+         source_path != s_interp_source_path || force_4_3 != s_interp_force_4_3;
+     if (s_interp_source == 1) {
+         /* FLIP source: a VBlank that re-presents the same displayed image is
+@@ -7567,6 +7599,7 @@ static int interp_capture(GLuint fbo, int x, int y, int w, int h,
+         s_interp_valid = 0;
+         s_interp_w = pw; s_interp_h = ph;
+         s_interp_src_w = sw; s_interp_src_h = sh;
++        s_interp_nat_w = w; s_interp_nat_h = h;
+         s_interp_prev = s_interp_cur = 0;
+         for (int i = 0; i < 3; i++) {
+             glBindTexture(GL_TEXTURE_2D, s_interp_tex[i]);
+@@ -7630,10 +7663,12 @@ static void interp_draw_textures(GLuint prev_tex, GLuint curr_tex, float alpha,
+     p_glUniform1i(s_interp_uBlendMode, blend_mode);
+     present_set_gamma(s_interp_uGamma, 1);
+     p_glUniform4f(s_interp_uUvRect, 0.f, 0.f, 1.f, 1.f);
+-    /* Interp textures hold exactly the display rect (uv_rect is 0..1), so pitch
+-     * == display height == s_interp_src_h rows at the output scale (the
+-     * texture itself can be smaller, see hiw_capture_size). */
+-    INTERP_SCANLINE(s_interp_src_h, s_interp_src_h, lh);
++    /* Interp textures hold exactly the display rect (uv_rect is 0..1): one
++     * PS1 line is 1/s_interp_nat_h of it, whatever the internal scale or the
++     * texture's own size (see hiw_capture_size). */
++    INTERP_SCANLINE((float)s_interp_nat_h, s_interp_nat_h, lh);
++    INTERP_CRT((float)s_interp_nat_w, (float)s_interp_nat_h);
++    glDisable(GL_BLEND);
+     p_glBindVertexArray(s_present_vao);
+     glDrawArrays(GL_TRIANGLES, 0, 3);
+     p_glBindVertexArray(0);
+-- 
+2.56.0
+
