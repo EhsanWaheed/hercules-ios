@@ -14,11 +14,15 @@
 | Enter | Start | Start |
 | Right Shift | Back / Select | Select |
 
+The keyboard keys can be changed in the menu (Esc), page **Keys**: choose a
+button, press Enter, then the new key (Esc cancels). "Restore defaults" puts
+them back. They are kept in `keybinds.ini` next to the game.
+
 ## Menu and shortcuts
 
 | Keyboard | Gamepad | What |
 |----------|---------|------|
-| **Esc** | **Select + Start** | **Menu**: pauses the game. Resume, back to the launcher, graphics (HD characters / scenery / HUD, texture filter, 16:9 or 4:3, window or fullscreen, perspective, geometry), filters (CRT picture, mask, glow, scanlines, colours), volume, and this list. Changes apply at once and are kept. |
+| **Esc** | **Select + Start** | **Menu**: pauses the game. Resume, back to the launcher, graphics (HD characters / scenery / HUD, texture filter, 16:9 or 4:3, window or fullscreen, perspective, geometry), filters (CRT picture, mask, glow, scanlines, colours), volume, the keyboard keys, and this list. Changes apply at once and are kept. |
 | F7 | Select + R1 | Save states: 12 slots with pictures (S save, L or Enter load) |
 | F8 | Select + R3 | Rewind |
 | Tab (hold) | Select + L1 (hold) | Fast forward |

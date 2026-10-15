@@ -16,13 +16,13 @@
  */
 #include "mod_plugins.h"
 #include "cpu_state.h"
+#include "hercules_addrs.h" /* per PAL version, hercules/tools/port_version.py */
 
 #include <string.h>
 
-#define FLUSH_WORD0     0x8F82005Cu /* lw $v0, 0x5C($gp) (TITLE: 0x170) */
 #define FLUSH_CALL_OFF  0xC8u       /* jal LoadImage inside the flush */
 #define FLUSH_CALL_WORD 0x0C00632Bu
-#define DRAW_SYNC       0x800189E8u /* PsyQ DrawSync (main executable) */
+#define DRAW_SYNC       HERC_DRAW_SYNC /* PsyQ DrawSync (main executable) */
 
 /* All three files load at 0x80038350 and carry the same two functions,
  * relinked (tools/find_func.py): only data addresses and gp offsets differ.
@@ -34,13 +34,16 @@ typedef struct {
     uint32_t staging_gp;   /* gp offset of the staging buffer pointer */
     uint32_t queue;        /* u16 field ids queued for upload */
     uint32_t flush;        /* column upload function */
-    uint32_t flush_word0;
+    uint32_t flush_word0;  /* lw $v0, count($gp) */
 } Module;
 
 static const Module k_modules[] = {
-    {"ENGINE1", 0x8003FD7Cu, 0x8F84290Cu, 0x290Cu, 0x80072A6Cu, 0x8004023Cu, FLUSH_WORD0},
-    {"ENGINE3", 0x8003F18Cu, 0x8F8432C0u, 0x32C0u, 0x80066018u, 0x8003F64Cu, FLUSH_WORD0},
-    {"TITLE",   0x8005418Cu, 0x8F843ACCu, 0x3ACCu, 0x8008BD58u, 0x8005464Cu, 0x8F820170u},
+    {"ENGINE1", HERC_E1_DECODE_SITE, HERC_E1_DECODE_WORD, HERC_E1_STAGING_GP, HERC_E1_QUEUE,
+     HERC_E1_FLUSH_SITE, HERC_E1_FLUSH_WORD},
+    {"ENGINE3", HERC_E3_DECODE_SITE, HERC_E3_DECODE_WORD, HERC_E3_STAGING_GP, HERC_E3_QUEUE,
+     HERC_E3_FLUSH_SITE, HERC_E3_FLUSH_WORD},
+    {"TITLE",   HERC_TI_DECODE_SITE, HERC_TI_DECODE_WORD, HERC_TI_STAGING_GP, HERC_TI_QUEUE,
+     HERC_TI_FLUSH_SITE, HERC_TI_FLUSH_WORD},
 };
 #define MODULE_COUNT (sizeof(k_modules) / sizeof(k_modules[0]))
 

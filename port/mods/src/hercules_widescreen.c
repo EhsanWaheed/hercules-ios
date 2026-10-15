@@ -28,6 +28,7 @@
 #include <string.h>
 #include "mod_plugins.h"
 #include "cpu_state.h"
+#include "hercules_addrs.h" /* per PAL version, hercules/tools/port_version.py */
 
 #define REG_S0 16
 #define REG_S5 21
@@ -46,8 +47,10 @@ typedef struct {
 } HudHelper;
 
 static const HudHelper k_helpers[] = {
-    {"ENGINE1", 0x8004A050u, 0x80049FE8u, 0x0C005F43u, 0x80049128u, 0x80049F9Cu},
-    {"ENGINE3", 0x80046E04u, 0x80046D9Cu, 0x0C005F43u, 0x800465B0u, 0x80046D50u},
+    {"ENGINE1", HERC_E1_HUD_SITE, HERC_E1_HUD_CHECK_SITE, HERC_E1_HUD_CHECK_WORD,
+     HERC_E1_HUD_LO, HERC_E1_HUD_HI},
+    {"ENGINE3", HERC_E3_HUD_SITE, HERC_E3_HUD_CHECK_SITE, HERC_E3_HUD_CHECK_WORD,
+     HERC_E3_HUD_LO, HERC_E3_HUD_HI},
 };
 #define HELPER_COUNT (sizeof(k_helpers) / sizeof(k_helpers[0]))
 
@@ -87,8 +90,10 @@ static void on_activate(void) {
 
 typedef struct { uint32_t fine, col, run, loop; } Backdrop;
 static const Backdrop k_backdrops[] = {
-    {0x8003D3B0u, 0x8003D420u, 0x8003D4ACu, 0x8003D5F4u},   /* ENGINE1 func_8003D348 */
-    {0x8003C27Cu, 0x8003C2ECu, 0x8003C378u, 0x8003C4C0u},   /* ENGINE3 func_8003C214 */
+    {HERC_E1_BD_FINE_SITE, HERC_E1_BD_COL_SITE, HERC_E1_BD_RUN_SITE, HERC_E1_BD_LOOP_SITE},
+    /* ENGINE1 func_8003D348 */
+    {HERC_E3_BD_FINE_SITE, HERC_E3_BD_COL_SITE, HERC_E3_BD_RUN_SITE, HERC_E3_BD_LOOP_SITE},
+    /* ENGINE3 func_8003C214 */
 };
 #define BACKDROP_COUNT (sizeof(k_backdrops) / sizeof(k_backdrops[0]))
 
@@ -129,9 +134,9 @@ static void on_backdrop(struct CPUState* cpu, uint32_t address) {
 #define ORI_V0_64   0x34020064u
 typedef struct { uint32_t func, jal_addr, ori_addr; } Panorama;
 static const Panorama k_panoramas[] = {
-    {0x80068910u, 0x80068964u, 0x80068998u},   /* OV2  (level 2) func_80068910 */
-    {0x800687E8u, 0x8006883Cu, 0x80068870u},   /* OV8  (level 8) func_800687E8 */
-    {0x800753E0u, 0x80075434u, 0x80075468u},   /* OV9  (level 9) func_800753E0 */
+    {HERC_OV2_SKY, HERC_OV2_SKY_JAL_SITE, HERC_OV2_SKY_ORI_SITE},   /* OV2 (level 2) func_80068910 */
+    {HERC_OV8_SKY, HERC_OV8_SKY_JAL_SITE, HERC_OV8_SKY_ORI_SITE},   /* OV8 (level 8) func_800687E8 */
+    {HERC_OV9_SKY, HERC_OV9_SKY_JAL_SITE, HERC_OV9_SKY_ORI_SITE},   /* OV9 (level 9) func_800753E0 */
 };
 #define PANORAMA_COUNT (sizeof(k_panoramas) / sizeof(k_panoramas[0]))
 static int s_in_panorama;

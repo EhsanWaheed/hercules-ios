@@ -1,0 +1,86 @@
+# Autofilled by tools/new_project_layout/probe_disc.py from your legal dump.
+# Review before shipping. Runtime quirks / overlay seeds still need hand work.
+
+[game]
+name = "Hercules"
+id = "SCES-00895"
+players = 1
+exe = "disc/SCES_008.95"
+# relative to the game folder: put your Redump dump (cue + bin) into disc/
+disc = "disc/Disney Juego de Accion Disney Presenta Hercules (Spain).cue"
+load_address = "0x80010000"
+entry_pc = "0x80013710"
+text_size = "0x0001F000"
+stack_base = "0x801FFFF0"
+
+# Digests are for data Track 01 (first BINARY FILE / TRACK 01).
+[prepare_disc]
+out_dir = "disc"
+bin_name = "Disney Juego de Accion Disney Presenta Hercules (Spain).bin"
+cue_name = "Disney Juego de Accion Disney Presenta Hercules (Spain).cue"
+boot_exe = "SCES_008.95"
+known_sizes = [400634976]
+known_md5 = [
+  "ffab563df21f96e9ee77c40d74a9a00b",
+]
+known_sha1 = [
+  "de1a1d72114069e536706511b531461fc2c4a285",
+]
+known_crc32 = [
+  "8115908d",
+]
+
+[recompiler]
+seeds = "seeds/ghidra_funcs.txt"
+out_dir = "generated"
+strict = true
+# Mod hooks the AOT overlay code must call (regenerate static after changes):
+# hercules.hd-sprites (mods/src/hercules_hd_sprites.c): sprite cache hooks in
+# ENGINE1 / ENGINE3 / TITLE; hercules.widescreen (mods/src/hercules_widescreen.c):
+# HUD sprite helper tag stores 0x8004A050 (ENGINE1) and 0x80046E04 (ENGINE3),
+# backdrop column loop in func_8003D348 (ENGINE1) / func_8003C214 (ENGINE3),
+# panorama sky builders in OV2 / OV8 / OV9.
+mod_function_entry_funcs = ["0x80040204", "0x8003F614", "0x8005464C", "0x8006889C", "0x80068774", "0x8007536C"]
+mod_instruction_sites = ["0x8003FD44", "0x8003F154", "0x8005418C", "0x8004A018", "0x80046DCC", "0x8003D378", "0x8003D3E8", "0x8003D474", "0x8003D5BC", "0x8003C244", "0x8003C2B4", "0x8003C340", "0x8003C488"]
+
+[runtime]
+window_title = "Hercules Recompiled"
+memcard_dir = "saves"
+overlay_cache = true
+
+[video]
+renderer = "opengl"
+aspect_ratio = "4:3"
+internal_resolution = "1080p"
+
+[controller]
+default_mode = "digital"
+
+# Online mount gate: digests + track count + optional TOC fingerprint
+# (see docs/NETPLAY.md).
+[netplay]
+require_cue = true
+required_tracks = 1
+
+# Widescreen probe (mod hercules.widescreen requests 16:9): frames that use
+# the GTE count as gameplay, so native-wide margins engage in levels while
+# menus and FMV stay 4:3. Culls are not widened yet.
+[widescreen]
+gte_game_mode = true
+
+# Landscape column window (native-wide). Each layer draws columns outward from
+# the camera until a tile's projected anchor leaves the screen; these tests
+# decide that, so widening them lets every layer fill the 16:9 margins.
+# Identity at 4:3 (margin 0). ENGINE1 and ENGINE3 load at the same base; a
+# listed address holding another instruction kind in the other file is left
+# vanilla by the generator.
+[widescreen.cull]
+# ENGINE1 func_80045F90 / func_800464DC: lhu SX; sltiu v0,v0,0x141 (0..320)
+screen_x_sites = ["0x80046188", "0x80046818"]
+# ENGINE1 rotated path (slti SX,0x141) and ENGINE3 func_80042EB0 /
+# func_80043148 / func_80044480 right edges (0x141, 0x161)
+slti_sites = ["0x80046228", "0x80042FAC", "0x8004328C", "0x800445B0", "0x80042F7C", "0x80042F90", "0x8004325C", "0x80043270", "0x80044580", "0x80044594"]
+# ENGINE3 left edges: slti v0,v0,-0x20
+slti_lower_sites = ["0x80042FC4", "0x800432A4", "0x800445C8"]
+# left edges as `bgez SX, keep`: ENGINE1 rotated path, ENGINE3 dir 1
+bgez_sites = ["0x80046244", "0x80042F78", "0x80043258", "0x8004457C"]

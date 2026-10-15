@@ -101,3 +101,13 @@ starvation_dump.jsonl
 /recompiler-win.log
 /package-win.log
 /dist/
+
+# Per-version build dirs (versions/<ID>/, hercules/tools/port_version.py):
+# the boot exe copy and disc links, machine-specific generation config,
+# work areas and logs stay local; game.toml, hercules_addrs.h, CMakeLists.txt,
+# aot/, seeds/ and generated/ are committed like the root's.
+/versions/*/disc/
+/versions/*/game.gen.toml
+/versions/*/.cache/
+/versions/*/*.log
+/versions/*/build-recompiler

@@ -154,7 +154,7 @@ std::vector<Image> decode_fullscreen(const std::vector<uint8_t>& blob) {
 // Port of hercules/tools/sprites.py (ENGINE1 func_8003FF1C and the cell
 // handling of func_8003F9D4 / func_8003EA78).
 namespace {
-constexpr uint32_t ENGINE1_BASE = 0x80038350, DIST_TABLE = 0x8006AB3B;
+constexpr uint32_t ENGINE1_BASE = 0x80038350;   // the same in every PAL release
 
 struct Decoder {
     const std::vector<uint8_t>& data;
@@ -231,9 +231,9 @@ std::vector<int> SpriteFrames::order() const {
     return o;
 }
 
-bool decode_sprites(const std::vector<uint8_t>& data, const std::vector<uint8_t>& engine1,
+bool decode_sprites(const std::vector<uint8_t>& data, const std::vector<uint8_t>& engine1, uint32_t dist_table,
                     SpriteFrames& out, std::string* error) {
-    const size_t doff = DIST_TABLE - ENGINE1_BASE + 0x800;
+    const size_t doff = dist_table - ENGINE1_BASE + 0x800;
     if (data.size() < 16 || std::memcmp(data.data(), "i1.4", 4) != 0 || engine1.size() < doff + 0x48) {
         if (error) *error = "not a sprite file";
         return false;
@@ -341,7 +341,7 @@ struct Glyph {
 int round_half_even(double v) { return int(std::nearbyint(v)); }
 }  // namespace
 
-bool build_font(const std::vector<uint8_t>& stp, Font& font, std::string* error) {
+bool build_font(const std::vector<uint8_t>& stp, Font& font, std::string* error, const std::string& release) {
     if (stp.size() < 64 * 2 * 96) { if (error) *error = "HUD strip too short"; return false; }
     auto word = [&](int x, int y) { return unsigned(le16(&stp[(size_t(y) * 64 + x) * 2])); };
     // 4-bit texels of rows 0..95 (256 wide), palettes at words x 32..47, rows 32..39
@@ -382,28 +382,66 @@ bool build_font(const std::vector<uint8_t>& stp, Font& font, std::string* error)
 
     struct Box { int x0, y0, x1, y1; };
     std::map<char32_t, Box> boxes;
-    const struct { const char32_t* text; int yf, yt, xr; } rows[] = {
-        {U"ABCDEFGHIJKL?", 42, 59, 232}, {U"MNOPRSTUWZ1", 59, 76, 238}};
-    for (const auto& r : rows) {
-        const auto [y0, y1] = band(96, r.xr, r.yf, r.yt);
+    // The strip holds only the letters of each release's own pause menu, in
+    // its own order (and the English ones larger); the rest is drawn below.
+    // German: letters stand apart, cut at the gaps of their outline. The
+    // others touch through their shadows: cut at the gaps of the bright face
+    // (index >= 12), then give each letter its shadow back up to the next.
+    struct Row { const char32_t* text; int yf, yt, x0, xr; };
+    static const std::map<std::string, std::vector<Row>> kRows = {
+        {"SCES-00893", {{U"ABCDEFGHIJKL?", 42, 59, 96, 232}, {U"MNOPRSTUWZ1", 59, 76, 96, 238}}},
+        {"SCES-00892", {{U"ABCDEGÊILMN", 45, 60, 96, 244}, {U"OPRSTUVZQéû", 61, 76, 96, 244}}},
+        {"SCES-00894", {{U"ABCDEGILM?", 43, 61, 96, 244}, {U"NOPRSTU`1ÀÌ", 61, 79, 96, 244}}},
+        {"SCES-00895", {{U"ABCDEFGILM", 42, 57, 96, 244}, {U"NOPRSTUV¿1", 59, 74, 96, 244}}},
+        {"SCES-00891", {{U"ACDEILNO?!", 40, 58, 96, 244}, {U"MPQRSTUY1", 59, 77, 96, 244}, {U"BG", 78, 96, 118, 156}}},
+    };
+    const bool by_face = release != "SCES-00893";
+    auto rows_it = kRows.find(release);
+    if (rows_it == kRows.end()) rows_it = kRows.find("SCES-00893");
+    auto face_ink = [&](int x, int y0, int y1) {
+        int n = 0;
+        for (int y = y0; y < y1; ++y) n += idx[size_t(y) * PW + x] >= 12;
+        return n;
+    };
+    for (const auto& r : rows_it->second) {
+        const auto [y0, y1] = band(r.x0, r.xr, r.yf, r.yt);
         std::vector<std::pair<int, int>> bs;
-        for (auto b : segment(y0, y1, 96, r.xr)) if (b.second - b.first >= 3) bs.push_back(b);
+        if (by_face) {
+            int start = -1;
+            for (int x = r.x0; x <= r.xr; ++x) {
+                const bool on = x < r.xr && face_ink(x, y0, y1) > 0;
+                if (on && start < 0) start = x;
+                else if (!on && start >= 0) { if (x - start >= 2) bs.push_back({start, x}); start = -1; }
+            }
+        } else {
+            for (auto b : segment(y0, y1, r.x0, r.xr)) if (b.second - b.first >= 3) bs.push_back(b);
+        }
         const size_t want = std::char_traits<char32_t>::length(r.text);
-        while (bs.size() < want) {                 // touching letters: split the widest
+        while (bs.size() < want && !bs.empty()) {  // touching letters: split the widest
             size_t i = 0;
             for (size_t k = 1; k < bs.size(); ++k)
                 if (bs[k].second - bs[k].first > bs[i].second - bs[i].first) i = k;
             const auto [a, b] = bs[i];
+            if (b - a < 10) break;
             int best = -1, cut = a + 4;
             for (int x = a + 4; x < b - 4; ++x) {
                 int ink = 0;
-                for (int y = y0; y < y1; ++y) ink += mask(x, y);
-                if (best < 0 || ink < best) { best = ink; cut = x; }
+                if (by_face) ink = face_ink(x, y0, y1);
+                else for (int y = y0; y < y1; ++y) ink += mask(x, y);
+                const int mid = (a + b) / 2;
+                if (best < 0 || ink < best ||
+                    (by_face && ink == best && std::abs(x - mid) < std::abs(cut - mid))) {
+                    best = ink;
+                    cut = x;
+                }
             }
             bs.erase(bs.begin() + long(i));
             bs.insert(bs.begin() + long(i), {{a, cut}, {cut + 1, b}});
         }
         if (bs.size() != want) { if (error) *error = "font: unexpected glyph count"; return false; }
+        if (by_face)                               // the shadow, up to the next letter
+            for (size_t i = 0; i < want; ++i)
+                bs[i].second = std::min(bs[i].second + 2, i + 1 < want ? bs[i + 1].first : r.xr);
         for (size_t i = 0; i < want; ++i) boxes[r.text[i]] = {bs[i].first, y0, bs[i].second, y1};
     }
     int height = 0;
@@ -506,6 +544,16 @@ bool build_font(const std::vector<uint8_t>& stp, Font& font, std::string* error)
         };
 
         const int w = A.w;
+        // letters this release's strip lacks (German: Q V X Y), as heavy as its letters
+        auto need = [&](char32_t ch, Glyph gl) { if (!g.count(ch)) g[ch] = std::move(gl); };
+        need(U'F', stroke(w - 2, {{{1, 0}, {0, 0}, {0, 1}}, {{0, 0.45}, {0.8, 0.45}}}, 4));
+        need(U'H', stroke(w, {{{0, 0}, {0, 1}}, {{1, 0}, {1, 1}}, {{0, 0.47}, {1, 0.47}}}, 4));
+        need(U'J', stroke(w - 2, {{{1, 0}, {1, 0.75}, {0.75, 1}, {0.25, 1}, {0, 0.75}}}, 4));
+        need(U'K', stroke(w, {{{0, 0}, {0, 1}}, {{1, 0}, {0, 0.55}}, {{0.3, 0.42}, {1, 1}}}, 4));
+        need(U'W', stroke(w + 5, {{{0, 0}, {0.25, 1}, {0.5, 0.35}, {0.75, 1}, {1, 0}}}, 4));
+        need(U'Z', stroke(w, {{{0, 0}, {1, 0}, {0, 1}, {1, 1}}}, 4));
+        need(U'?', pmax(stroke(w - 2, {{{0, 0.22}, {0.3, 0}, {0.7, 0}, {1, 0.22}, {0.5, 0.58}, {0.5, 0.7}}}, 4),
+                        stroke(w - 2, {{{0.5, 0.92}, {0.5, 1}}}, 4)));
         g[U'V'] = stroke(w, {{{0, 0}, {0.5, 1}, {1, 0}}});
         g[U'X'] = stroke(w, {{{0, 0}, {1, 1}}, {{1, 0}, {0, 1}}});
         g[U'Y'] = stroke(w, {{{0, 0}, {0.5, 0.5}, {1, 0}}, {{0.5, 0.5}, {0.5, 1}}});
@@ -513,6 +561,7 @@ bool build_font(const std::vector<uint8_t>& stp, Font& font, std::string* error)
         g[U'<'] = stroke(aw, {{{1, 0.1}, {0, 0.5}, {1, 0.9}}});
         g[U'>'] = stroke(aw, {{{0, 0.1}, {1, 0.5}, {0, 0.9}}});
         g[U'/'] = stroke(aw, {{{1, 0}, {0, 1}}});
+        g[U'('] = stroke(6, {{{1, 0}, {0.15, 0.3}, {0.15, 0.7}, {1, 1}}});
         {
             const Glyph& O = g[U'O'];
             Glyph Q = O;
@@ -579,6 +628,7 @@ bool build_font(const std::vector<uint8_t>& stp, Font& font, std::string* error)
             for (int y = mid - 3; y < mid + 4; ++y) p.push_back({y, 4});
             g[U'+'] = marks(9, p);
         }
+        g[U')'] = flip(g[U'('], true, false);
         g[U'△'] = stroke(w, {{{0.5, 0}, {1, 1}, {0, 1}, {0.5, 0}}}, 1);
         g[U'□'] = stroke(w, {{{0.08, 0.08}, {0.92, 0.08}, {0.92, 1}, {0.08, 1}, {0.08, 0.08}}}, 1);
         g[U'○'] = stroke(w, {{{0.3, 0}, {0.7, 0}, {1, 0.3}, {1, 0.7}, {0.7, 1}, {0.3, 1}, {0, 0.7}, {0, 0.3}, {0.3, 0}}}, 1);

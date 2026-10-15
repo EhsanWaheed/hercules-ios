@@ -149,6 +149,14 @@ def protected(rel):
     parts = rel.split("/")
     if parts[0] == "update":                    # the updater's own state; only the script itself updates
         return rel != "update/updater.py"
+    # one disc and HD build per PAL release (launcher: disc-<id>.cfg, hd-build-<id>/)
+    if len(parts) == 1 and parts[0].startswith("disc-") and parts[0].endswith(".cfg"):
+        return True
+    if parts[0].startswith("hd-build-"):
+        return True
+    if parts[0] == "lang" and len(parts) > 2:   # lang/<id>/: the other releases' builds, same rules
+        rel = "/".join(parts[2:])
+        parts = parts[2:]
     return (rel in PROTECTED_FILES or parts[0] in PROTECTED_DIRS or rel.startswith(PROTECTED_PREFIXES))
 
 

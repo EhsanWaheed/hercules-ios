@@ -11,81 +11,9 @@ endif()
 
 project(HerculesRecomp LANGUAGES C CXX)
 
-# --- Opt-in product surfaces (OFF by default in the framework) -------------
-# Scaffold prompts / flags fill these. Without recomp-ui, PSX_RECOMP_UI is OFF.
-# The wizard (WIZARD_CMAKE_BLOCK / ENABLE_SETUP_WIZARD) is the first-run disc
-# picker; releases are compiled from the committed generated/ C, so it never
-# needs to generate or rebuild anything on a player's machine.
-set(PSX_RECOMP_UI OFF CACHE BOOL
-    "No recomp-ui submodule in this scaffold" FORCE)
-# Full netplay UI — enable after adding recomp-ui + testing:
-# if(EXISTS "${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
-#     set(PSX_NETPLAY ON CACHE BOOL "…" FORCE)
-# endif()
-# First-run setup wizard — enable after testing:
-# set(PSX_SETUP_WIZARD ON CACHE BOOL "…" FORCE)
-include("${PSXRECOMP_ROOT}/runtime/runtime.cmake")
+# German version (SCES-00893); the others build from versions/<ID>/:
+#   cmake -S versions/SCES-00891 -B build-en ...
+set(HERCULES_VERSION "SCES-00893")
+set(HERC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# This project's own mod catalog. The FRAMEWORK stages it -- together with its
-# builtin psx.* packages -- into <exe-dir>/mods/bundled, and refuses to
-# configure if a catalog exists here but is not declared. Never copy it by
-# hand: five titles did, and framework 4cc04be3's rename of the staged
-# directory broke all five silently (bead beads-eio.3.101).
-set(PSX_PRELOADED_MODS "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded")
-if(NOT IS_DIRECTORY "${PSX_PRELOADED_MODS}")
-    set(PSX_PRELOADED_MODS "NONE")
-endif()
-
-psxrecomp_add_game_runtime(psx-runtime
-    PRELOADED_MODS_DIR "${PSX_PRELOADED_MODS}"
-    # ENGINE1/ENGINE3/TITLE and level overlays, compiled from the original disc
-    # (aot/overlays.json, written by hercules/tools/aot_profile.py).
-    GAME_OVERLAY_STATIC_C "${CMAKE_CURRENT_SOURCE_DIR}/generated/overlays_static.c"
-    # ENABLE_NETPLAY_IF_PRESENT
-    # NETPLAY_LOBBY_URL "ws://netplay.retcomm.net:8765"
-    # ENABLE_SETUP_WIZARD
-    WINDOW_TITLE "Hercules Recompiled"
-    DEFAULT_GAME_CONFIG_PATH "game.toml"
-    MAX_PLAYERS 1
-    # LAUNCHER_BOXART "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/img/boxart.tga"
-    APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico"
-    # Committed game C (psxrecomp_cli.py generate; git add generated). Release
-    # CI configures with -DPSXRECOMP_REQUIRE_GAME_C=ON so a checkout without
-    # it fails instead of building a setup host.
-    GEN_MARKER "generated/SCES_008.93_dispatch.c"
-    GEN_FULL_GLOB "generated/SCES_008.93_full_*.c"
-    # CODEGEN_SETUP_SOURCES — add with recomp-ui / wizard later
-)
-
-# Stage runtime configs next to the exe for direct build/ launches. Only copy
-# files that exist — never fail POST_BUILD when game_options.toml is absent.
-foreach(_PSX_RUNTIME_CONFIG game.toml game_options.toml)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_PSX_RUNTIME_CONFIG}")
-        add_custom_command(TARGET psx-runtime POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_CURRENT_SOURCE_DIR}/${_PSX_RUNTIME_CONFIG}"
-                "$<TARGET_FILE_DIR:psx-runtime>/${_PSX_RUNTIME_CONFIG}"
-            COMMENT "Staging ${_PSX_RUNTIME_CONFIG}"
-            VERBATIM)
-    endif()
-endforeach()
-
-# Game-owned trusted plugins (activated by mods/preloaded manifests).
-target_sources(psx-runtime PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_hd_sprites.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_level_select.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_skip_intro.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_widescreen.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/mods/src/hercules_frame_blend.c")
-
-# The launcher, compiled into the game executable (psx_game_launcher.h): a
-# menu in the style of the 1997 title screens, its art decoded from the
-# player's disc at start-up. --no-launcher (and the launcher's own relaunch)
-# skips it.
-target_sources(psx-runtime PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native/hl_data.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native/hl_launcher.cpp")
-target_include_directories(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/launcher_native")
-# The host's toasts ("Scanlines on", fast forward ...), which the framework
-# only shows with recomp-ui. The in-game menu itself is in hl_launcher.cpp.
-target_compile_definitions(psx-runtime PRIVATE PSX_HOST_OSD_VISUAL=1)
+include("${HERC_ROOT}/hercules_game.cmake")

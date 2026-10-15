@@ -10,6 +10,18 @@ save_compatibility = "shared"
 [[target]]
 game_id = "SCES-00893"
 
+[[target]]
+game_id = "SCES-00891"
+
+[[target]]
+game_id = "SCES-00892"
+
+[[target]]
+game_id = "SCES-00894"
+
+[[target]]
+game_id = "SCES-00895"
+
 [[feature]]
 id = "level-select"
 name = "Level Select"

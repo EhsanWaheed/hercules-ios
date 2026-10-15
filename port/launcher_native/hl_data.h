@@ -50,7 +50,9 @@ struct SpriteFrames {
     std::map<int, Image> frames;        // key: 1-based frame number (fNNNN)
     std::vector<int> order() const;     // sorted frame numbers
 };
-bool decode_sprites(const std::vector<uint8_t>& data, const std::vector<uint8_t>& engine1,
+// dist_table: the ENGINE1 address of the run-length table, which moved when
+// each PAL release was relinked (Release::dist_table in hl_launcher.cpp).
+bool decode_sprites(const std::vector<uint8_t>& data, const std::vector<uint8_t>& engine1, uint32_t dist_table,
                     SpriteFrames& out, std::string* error);
 
 // The pause-menu font from the HUD strip (STP/STP1): glyph atlases in the
@@ -60,6 +62,8 @@ struct Font {
     std::map<char32_t, std::pair<int, int>> glyphs;   // char -> (x, width) in the atlas
     Image yellow, orange, blue;
 };
-bool build_font(const std::vector<uint8_t>& stp, Font& out, std::string* error);
+// release: the disc's PAL release (SCES-0089x); each holds other letters.
+bool build_font(const std::vector<uint8_t>& stp, Font& out, std::string* error,
+                const std::string& release = "SCES-00893");
 
 }  // namespace hl

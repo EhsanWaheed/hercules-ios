@@ -16,6 +16,7 @@
  * spawned (the title menu reads the card itself when a game is loaded).
  *
  * Feature direct-start replaces the title menu (the launcher is the menu):
+ * With skip-intro off the movies play first and the jump happens at 0xE7.
  * "Spiel starten" ends in step 0x29, which increments the level D_80035048
  * and picks the level's story movie and intro screen from jtbl_80079CB0
  * (level 1 -> step 0x64, 2 -> 0x65, 3 -> 0x66, 4 and 5 -> 0x67 with the level
@@ -23,20 +24,25 @@
  * between levels. On a cold boot the mod sets the level to target - 1 and the
  * first step to 0x29. Level 0 is not in that table (new level 0 goes back to
  * the title); the launcher starts it as level 1 with hercules.level-select.
+ *
+ * Feature skip-fmv switches on the runtime's automatic FMV skip (MDEC decode
+ * with an XA stream running = a movie; it holds START, which ends Hercules'
+ * movie player). The runtime leaves that setting to a title mod.
  */
 #include "mod_plugins.h"
+#include "hercules_addrs.h" /* per PAL version, hercules/tools/port_version.py */
 
-#define TITLE_SITE    0x8005418Cu /* lw $a0, 0x3ACC($gp) in TITLE */
-#define TITLE_WORD    0x8F843ACCu
-#define TASK0_HANDLER 0x80065CB8u
-#define TASK0_STEP    0x80065CBCu
-#define TASK0_WAIT    0x80065CC0u
-#define INTRO_HANDLER 0x8003EF94u
+#define TITLE_SITE    HERC_TI_DECODE_SITE /* lw $a0, staging($gp) in TITLE */
+#define TITLE_WORD    HERC_TI_DECODE_WORD
+#define TASK0_HANDLER HERC_TI_TASK0
+#define TASK0_STEP    (HERC_TI_TASK0 + 4u)
+#define TASK0_WAIT    (HERC_TI_TASK0 + 8u)
+#define INTRO_HANDLER HERC_TI_INTRO_HANDLER
 #define STEP_NOTICE   0x33u
 #define STEP_MEMCARD  0xE7u
 #define STEP_LOADING  0xE6u
 #define STEP_NEW_GAME 0x29u
-#define LEVEL         0x80035048u
+#define LEVEL         HERC_LEVEL
 
 #include <stdlib.h>
 
@@ -49,7 +55,9 @@ static void on_vblank(void) {
     if (psx_mod_read_word(TASK0_HANDLER) != INTRO_HANDLER) return;
     const uint32_t step = psx_mod_read_word(TASK0_STEP);
     uint32_t next = step;
-    if (s_direct_level && step == STEP_NOTICE) {
+    /* direct start: at the first notice, or after the intro movies when they
+     * are wanted (skip-intro off) -- step 0xE7 comes right after them */
+    if (s_direct_level && step == (s_skip_intro ? STEP_NOTICE : STEP_MEMCARD)) {
         psx_mod_write_byte(LEVEL, (uint8_t)(s_direct_level - 1));
         next = STEP_NEW_GAME;
     } else if (s_skip_intro && step == STEP_NOTICE)
@@ -66,6 +74,9 @@ static void on_vblank(void) {
 
 static void on_activate_intro(void) { s_skip_intro = 1; }
 static void on_activate_memcard(void) { s_skip_memcard = 1; }
+static void on_activate_fmv(void) {
+    if (!psx_mod_set_auto_skip_fmv(1)) psx_mod_counter_add("hercules.skip-fmv.refused", 1);
+}
 static void on_activate_direct(void) {
     char value[16] = "";
     s_direct_level = 1;
@@ -80,6 +91,7 @@ PSX_MOD_CONSTRUCTOR(hercules_register_skip_intro) {
     (void)psx_mod_register_vblank_plugin("hercules.skip-intro", on_vblank);
     (void)psx_mod_register_activation_plugin("hercules.skip-memcard", on_activate_memcard);
     (void)psx_mod_register_vblank_plugin("hercules.skip-memcard", on_vblank);
+    (void)psx_mod_register_activation_plugin("hercules.skip-fmv", on_activate_fmv);
     (void)psx_mod_register_activation_plugin("hercules.direct-start", on_activate_direct);
     (void)psx_mod_register_vblank_plugin("hercules.direct-start", on_vblank);
 }

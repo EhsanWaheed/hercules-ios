@@ -13,14 +13,15 @@
  * which sets another level) is left alone.
  */
 #include "mod_plugins.h"
+#include "hercules_addrs.h" /* per PAL version, hercules/tools/port_version.py */
 
 #include <stdlib.h>
 
-#define LEVEL        0x80035048u
-#define DEMO_FLAG_A  0x8003504Eu
-#define DEMO_FLAG_B  0x80035050u
-#define TITLE_SITE   0x8005418Cu /* lw $a0, 0x3ACC($gp): TITLE's sprite decode */
-#define TITLE_WORD   0x8F843ACCu
+#define LEVEL        HERC_LEVEL
+#define DEMO_FLAG_A  HERC_DEMO_FLAG_A
+#define DEMO_FLAG_B  HERC_DEMO_FLAG_B
+#define TITLE_SITE   HERC_TI_DECODE_SITE /* TITLE's sprite decode */
+#define TITLE_WORD   HERC_TI_DECODE_WORD
 #define NEW_GAME     1
 #define SETTLE       2           /* VBlanks a real start must hold level 1 */
 

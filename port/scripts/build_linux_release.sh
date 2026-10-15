@@ -17,5 +17,17 @@ cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSDL3_DIR="$TC/deps/lib/cmake/SDL3" \
   -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++"
 cmake --build build-linux --target psx-runtime
+
+# The other four PAL releases, each its own build (versions/<id>/CMakeLists.txt);
+# the archive carries them as lang/<id>/.
+EXTRA_BUILDS=""
+for id in SCES-00891 SCES-00892 SCES-00894 SCES-00895; do
+  cmake -S "versions/$id" -B "build-linux-$id" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DSDL3_DIR="$TC/deps/lib/cmake/SDL3" \
+    -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++"
+  cmake --build "build-linux-$id" --target psx-runtime
+  mkdir -p "build-linux-$id/assets/fonts" "build-linux-$id/assets/img"
+  EXTRA_BUILDS+=" build-linux-$id"
+done
 mkdir -p build-linux/assets/fonts build-linux/assets/img
-RELEASE_VERSION="$(cat VERSION)" bash scripts/package_release.sh build-linux linux-x64 build-recompiler
+HERC_EXTRA_BUILDS="$EXTRA_BUILDS" RELEASE_VERSION="$(cat VERSION)" bash scripts/package_release.sh build-linux linux-x64 build-recompiler

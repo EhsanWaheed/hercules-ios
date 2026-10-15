@@ -33,10 +33,23 @@ cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE
 cmake --build build-win --target psx-runtime
 
+# The other four PAL releases, each its own build (versions/<id>/CMakeLists.txt);
+# the archive carries them as lang/<id>/.
+EXTRA_BUILDS=""
+for id in SCES-00891 SCES-00892 SCES-00894 SCES-00895; do
+  cmake -S "versions/$id" -B "build-win-$id" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_FIND_ROOT_PATH="$SYSROOT" \
+    -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+    -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE
+  cmake --build "build-win-$id" --target psx-runtime
+  mkdir -p "build-win-$id/assets/fonts" "build-win-$id/assets/img"
+  EXTRA_BUILDS+=" build-win-$id"
+done
+
 cmake -S psxrecomp/recompiler -B build-recompiler-win -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_FIND_ROOT_PATH="$SYSROOT" \
   -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
 cmake --build build-recompiler-win --target psxrecomp-game psxrecomp-bios
 
 mkdir -p build-win/assets/fonts build-win/assets/img
-RELEASE_VERSION="$VERSION" bash scripts/package_release.sh build-win windows-x64 build-recompiler-win
+HERC_EXTRA_BUILDS="$EXTRA_BUILDS" RELEASE_VERSION="$VERSION" bash scripts/package_release.sh build-win windows-x64 build-recompiler-win

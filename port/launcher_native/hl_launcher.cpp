@@ -28,6 +28,23 @@
 #include "psx_game_launcher.h"
 #include "psx_game_menu.h"
 
+// The framework's keyboard bindings (runtime/include/psx_keybinds.h; that
+// header pulls in an SDL2 compatibility layer, so only what is used here,
+// with the button order of enum PsxKeybindButton).
+extern "C" {
+const char* psx_keybinds_button_name(int button);
+SDL_Scancode psx_keybinds_get_button(int player, int button);
+void psx_keybinds_set_button(int player, int button, SDL_Scancode sc);
+void psx_keybinds_set_button_alt(int player, int button, SDL_Scancode sc);
+void psx_keybinds_reset_player(int player);
+void psx_keybinds_save(void);
+}
+enum {
+    PSX_KB_UP = 0, PSX_KB_DOWN, PSX_KB_LEFT, PSX_KB_RIGHT, PSX_KB_CROSS, PSX_KB_CIRCLE, PSX_KB_SQUARE,
+    PSX_KB_TRIANGLE, PSX_KB_L1, PSX_KB_R1, PSX_KB_L2, PSX_KB_R2, PSX_KB_L3, PSX_KB_R3, PSX_KB_START,
+    PSX_KB_SELECT, PSX_KB_LS_UP, PSX_KB_LS_DOWN, PSX_KB_LS_LEFT, PSX_KB_LS_RIGHT
+};
+
 #ifdef _WIN32
 extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId(void);
 #else
@@ -40,7 +57,29 @@ namespace hl {
 namespace {
 
 constexpr int W = 320, H = 256, SC = 4;           // stage in PAL pixels, drawn at 4x
-const char* const GAME_ID = "SCES-00893";
+// The five PAL releases (hercules/docs/pal_versions.md). Each disc holds one
+// language and needs its own build: the launcher's language picks the
+// release, the player supplies that release's disc. The German build sits in
+// the game folder, the others in lang/<id>/ (own game.toml, saves, caches;
+// settings, keys, discs and HD packs stay in the game folder).
+struct Release { const char* lang; const char* id; const char* boot; uint32_t dist_table; };
+const Release kReleases[] = {
+    {"de", "SCES-00893", "SCES_008.93", 0x8006AB3B}, {"en", "SCES-00891", "SCES_008.91", 0x8006AB4F},
+    {"fr", "SCES-00892", "SCES_008.92", 0x8006AB3F}, {"it", "SCES-00894", "SCES_008.94", 0x8006AB3B},
+    {"es", "SCES-00895", "SCES_008.95", 0x8006AB03},
+};
+#ifndef HERCULES_GAME_ID
+#define HERCULES_GAME_ID "SCES-00893"
+#endif
+const char* const OWN_ID = HERCULES_GAME_ID;     // the release this exe was built for
+const Release& release(const std::string& id) {
+    for (const auto& r : kReleases) if (id == r.id) return r;
+    return kReleases[0];
+}
+const Release* release_for_lang(const std::string& lang) {
+    for (const auto& r : kReleases) if (lang == r.lang) return &r;
+    return nullptr;
+}
 
 // --------------------------------------------------------------- utilities
 std::u32string utf32(const std::string& s) {
@@ -132,7 +171,7 @@ const Setting kSettings[] = {
 const char* const kVideoKeys[] = {"internal_resolution", "window_width", "fullscreen", "aspect_ratio", "vsync",
                                   "texture_filtering", "antialiasing", "crt_filter", "scanlines",
                                   "scanline_strength", "perspective_texturing", "geometry_correction",
-                                  "auto_skip_fmv", "rewind"};
+                                  "rewind"};
 const std::map<std::string, std::map<std::string, std::string>> kPresets = {
     {"original", {{"internal_resolution", "native"}, {"texture_filtering", "nearest"}, {"antialiasing", "false"},
                   {"crt_filter", "crt"}, {"scanlines", "true"}, {"crt_sim", "true"}, {"scanline_strength", "0.35"},
@@ -175,8 +214,12 @@ struct Store {
 };
 
 // ------------------------------------------------------------ the context
+// exe_dir is the game folder (launcher.ini, discs, HD packs, keys); id the
+// release in use and game_dir/exe its build (game.toml, saves, settings.toml).
 struct Ctx {
     fs::path exe, exe_dir, game_toml, disc;
+    std::string id = OWN_ID;
+    fs::path game_dir, launcher_exe;
     Store store;
     std::map<std::string, std::string> game;         // game.toml flattened
     std::string preset() const {
@@ -198,7 +241,20 @@ fs::path find_up(const fs::path& start, const fs::path& rel) {
 }
 
 // ---------------------------------------------------------------- packs
-fs::path pack_base(const Ctx& c) { return c.exe_dir / "mods" / "texture-packs" / GAME_ID; }
+fs::path pack_base(const Ctx& c) { return c.exe_dir / "mods" / "texture-packs" / c.id; }
+
+// A finished pack has its config.yaml and images in at least one part. The
+// framework creates an empty <pack>/{replacements,dumps} on every start that
+// has no pack configured, so "replacements/ exists" alone means nothing.
+bool pack_complete(const fs::path& base) {
+    if (!fs::exists(base / "config.yaml")) return false;
+    for (const char* p : {"sprites", "levels", "hud"}) {
+        std::error_code ec;
+        if (fs::is_directory(base / "replacements" / p, ec) &&
+            !fs::is_empty(base / "replacements" / p, ec)) return true;
+    }
+    return false;
+}
 
 std::vector<std::string> chosen_parts(const Ctx& c) {
     std::vector<std::string> p;
@@ -224,14 +280,14 @@ void link_tree(const fs::path& src, const fs::path& dst) {
 fs::path pack_for(const Ctx& c) {
     const fs::path base = pack_base(c);
     const auto parts = chosen_parts(c);
-    if (parts.empty() || !fs::is_directory(base / "replacements")) return {};
+    if (parts.empty() || !pack_complete(base)) return {};
     std::vector<std::string> present;
     for (const char* p : {"sprites", "levels", "hud"})
         if (fs::is_directory(base / "replacements" / p)) present.push_back(p);
     bool all = true;
     for (const auto& p : present) all &= std::find(parts.begin(), parts.end(), p) != parts.end();
     if (all) return base;
-    std::string name = std::string(GAME_ID) + ".launcher-";
+    std::string name = c.id + ".launcher-";
     for (size_t i = 0; i < parts.size(); ++i) name += (i ? "+" : "") + parts[i];
     const fs::path variant = base.parent_path() / name;
     std::string stamp;
@@ -264,8 +320,10 @@ fs::path pack_for(const Ctx& c) {
 // open, stops with the launcher and continues on the next start.
 struct HdStatus { std::string state, phase, error; double fraction = 0; long eta = -1; };
 
-fs::path hd_data(const Ctx& c) { return c.exe_dir / "hd-build"; }
-bool hd_pack_ready(const Ctx& c) { return fs::is_directory(pack_base(c) / "replacements"); }
+fs::path hd_data(const Ctx& c) {
+    return c.exe_dir / (c.id == "SCES-00893" ? std::string("hd-build") : "hd-build-" + c.id);
+}
+bool hd_pack_ready(const Ctx& c) { return pack_complete(pack_base(c)); }
 fs::path hd_python(const Ctx& c) {
 #ifdef _WIN32
     return c.exe_dir / "overlay_toolchain" / "python" / "pythonw.exe";     // no console window
@@ -369,7 +427,7 @@ std::string plain_notes(const std::string& md) {
 
 // ------------------------------------------------- settings.toml / mods
 void write_settings(const Ctx& c) {
-    const fs::path path = c.exe_dir / "settings.toml";
+    const fs::path path = c.game_dir / "settings.toml";
     std::map<std::string, std::map<std::string, std::string>> want;   // section -> key -> toml value
     for (const char* k : kVideoKeys) {
         const std::string key = k;
@@ -379,6 +437,7 @@ void write_settings(const Ctx& c) {
         if (key == "window_width" && v == "0") { want["video"]["window_width"] = ""; continue; }
         want["video"][key] = toml_value(key, v);
     }
+    want["video"]["auto_skip_fmv"] = "false";   // hercules.skip-intro's skip-fmv does it (the runtime leaves it to a mod)
     want["video"]["renderer"] = "\"opengl\"";
     want["audio"]["frequency"] = c.store.get("frequency");
     want["audio"]["spu_hq"] = c.store.get("spu_hq");
@@ -431,7 +490,7 @@ void write_settings(const Ctx& c) {
 // HD off with a pack present: an empty pack, so hercules.hd-sprites still loads
 // and the in-game menu can switch HD on without a restart.
 fs::path pack_none(const Ctx& c) {
-    const fs::path p = pack_base(c).parent_path() / (std::string(GAME_ID) + ".launcher-none");
+    const fs::path p = pack_base(c).parent_path() / (c.id + ".launcher-none");
     std::error_code ec;
     fs::create_directories(p / "replacements", ec);
     if (!fs::exists(p / "config.yaml")) write_atomic(p / "config.yaml", "MaxVRAMWriteSplits: 64\n");
@@ -460,6 +519,7 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     t += std::string("\n[feature.values]\naspect = ") + toml_str(wide ? "16:9" : "4:3") + "\n";
     feature("hercules.skip-intro", "skip-intro", c.store.b("skip_intro"));
     feature("hercules.skip-intro", "skip-memcard", c.store.b("skip_memcard"));
+    feature("hercules.skip-intro", "skip-fmv", c.store.b("auto_skip_fmv"));   // the runtime leaves it to a mod
     feature("hercules.skip-intro", "direct-start", new_game);
     t += "\n[feature.values]\nlevel = " + toml_str(level == "off" || level == "0" ? "1" : level) + "\n";
     // Faster emulated CD (4x: a level's ~2 MB in ~2 s instead of ~8 s) breaks
@@ -469,10 +529,11 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     feature("psx.enhancement.cd-speed", "cd-speed", false);
     t += "\n[feature.values]\nmultiplier = \"4\"\n";
     // Crossfade the game's 25 fps to the display refresh (presentation only).
+    // Off in releases for now: with it the CRT filter and overlays are missing.
     const std::string blend = c.store.get("frame_blend");
-    feature("hercules.frame-blend", "frame-blend", blend == "linear" || blend == "adaptive");
+    feature("hercules.frame-blend", "frame-blend", false);
     t += "\n[feature.values]\nblend = " + toml_str(blend == "adaptive" ? "adaptive" : "linear") + "\n";
-    write_atomic(c.exe_dir / "mods" / "state.toml", t);
+    write_atomic(c.game_dir / "mods" / "state.toml", t);
 }
 
 // ------------------------------------------------------------ save states
@@ -481,7 +542,8 @@ struct State { int slot; std::string name; std::time_t mtime; Image thumb; };
 fs::path saves_dir(const Ctx& c) {
     const std::string dir = c.game.count("runtime.memcard_dir") ? c.game.at("runtime.memcard_dir") : "saves";
     fs::path p = dir;
-    if (p.is_relative()) {
+    if (p.is_relative() && c.game_dir != c.exe_dir) p = c.game_dir / p;   // lang/<id>/: its own
+    else if (p.is_relative()) {
         const fs::path found = find_up(c.exe_dir, p);
         p = found.empty() ? c.exe_dir / p : found;
     }
@@ -543,7 +605,8 @@ struct Art {
     std::map<std::string, Image> caption, level_name;
 };
 
-bool load_art(const Disc& d, Art& a, std::string* err) {
+bool load_art(const Disc& d, const std::string& release, Art& a, std::string* err) {
+    const uint32_t dist_table = hl::release(release).dist_table;
     std::vector<uint8_t> b, e1;
     auto pic = [&](const char* file, int index, Image& out) {
         if (!d.read(file, b)) return false;
@@ -558,7 +621,7 @@ bool load_art(const Disc& d, Art& a, std::string* err) {
     for (int i = 1; i <= 11; ++i) pic(("TI/TSE" + std::to_string(i) + ".0").c_str(), 0, a.fresco[std::to_string(i)]);
     if (!ok || !d.read("EX/ENGINE1.", e1)) { if (err) *err = "this is not the Hercules disc"; return false; }
     auto sprites = [&](const char* file, SpriteFrames& sf) {
-        return d.read(file, b) && decode_sprites(b, e1, sf, err);
+        return d.read(file, b) && decode_sprites(b, e1, dist_table, sf, err);
     };
     SpriteFrames s1, s2, s3, s5, s8, s15, s16;
     if (!sprites("SD4/S4.1", s1) || !sprites("SD4/S4.2", s2) || !sprites("SD4/S4.3", s3) ||
@@ -580,7 +643,7 @@ bool load_art(const Disc& d, Art& a, std::string* err) {
     const std::pair<const char*, int> names[] = {{"0", 16}, {"1", 17}, {"2", 17}, {"3", 18}, {"5", 19}, {"6", 20},
                                                  {"7", 21}, {"8", 22}, {"9", 23}, {"10", 24}, {"11", 25}};
     for (auto [k, n] : names) if (s16.frames.count(n)) a.level_name[k] = s16.frames[n].crop_alpha();
-    if (!d.read("STP/STP1.", b) || !build_font(b, a.font, err)) return false;
+    if (!d.read("STP/STP1.", b) || !build_font(b, a.font, err, release)) return false;
     return true;
 }
 
@@ -590,6 +653,12 @@ enum class Key { None, Up, Down, Left, Right, Ok, Back, Delete };
 struct Hit { SDL_FRect r; std::function<void()> hover, click; };
 
 struct App;
+std::string system_language();   // first known language of the system (SDL)
+std::string disc_release(const fs::path& p);
+fs::path find_disc(const Ctx& c, const std::string& id);
+void remember_disc(const Ctx& c, const fs::path& p, const std::string& id);
+void use_release(Ctx& c, const std::string& id);
+fs::path pick_disc(SDL_Window* win);
 struct Screen {
     virtual ~Screen() = default;
     virtual void render(App&) = 0;
@@ -661,9 +730,13 @@ struct App {
     }
 
     // ------------------------------------------------------------- text
+    // The chosen language; none chosen = the system's (looked up again after
+    // every launcher.ini reload, so it is never lost and follows the system).
     std::string lang() const {
         const std::string l = ctx.store.get("language");
-        return kStrings.count(l) ? l : "en";
+        if (kStrings.count(l)) return l;
+        static const std::string sys = system_language();
+        return sys;
     }
     std::string T(const std::string& key, const std::map<std::string, std::string>& vars = {}) const {
         const auto& m = kStrings.at(lang());
@@ -718,13 +791,20 @@ struct App {
     }
     float text_block(const std::string& s, float x, float y, const char* color = "yellow", int max_w = 280) {
         const auto lines = wrap(s, max_w);
-        for (size_t i = 0; i < lines.size(); ++i) text(lines[i], x, y + i * 15, color, "center");
-        return lines.size() * 15.0f + (art.font.height - 15);
+        // 15 px per line; a line with accented capitals (É Ü Ñ ...: any
+        // non-ASCII byte) gets 3 px more so its marks stay clear of the line above
+        float dy = 0;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (i) dy += 15 + (std::any_of(lines[i].begin(), lines[i].end(),
+                                           [](char ch) { return (unsigned char)ch >= 0x80; }) ? 3 : 0);
+            text(lines[i], x, y + dy, color, "center");
+        }
+        return dy + 15.0f + (art.font.height - 15);
     }
     // the game's German caption sprite, or the same words in the font
     void caption(const char* sprite, const std::string& key, float y, const char* color = "yellow") {
         auto it = art.caption.find(sprite ? sprite : "");
-        if (lang() == "de" && it != art.caption.end()) centered(it->second, y);
+        if (disc_art() && it != art.caption.end()) centered(it->second, y);
         else text_block(T(key), W / 2.0f, y, color, 300);
     }
     std::string level_name(const std::string& lv) const {
@@ -736,7 +816,26 @@ struct App {
     // ---------------------------------------------------------- navigation
     void go(Screen* s, bool push = true) { if (push && screen) history.push_back(screen); screen = s; }
     void back() { if (!history.empty()) { screen = history.back(); history.pop_back(); } }
-    void set(const std::string& k, const std::string& v) { ctx.store.kv[k] = v; ctx.store.save(); }
+    void set(const std::string& k, const std::string& v) {
+        ctx.store.kv[k] = v;
+        ctx.store.save();
+        if (k == "language") switch_release();
+    }
+    // The disc art (captions, level names, menu words) is in its disc's
+    // language; elsewhere the texts are drawn in the font.
+    std::string art_lang;
+    bool disc_art() const { return lang() == art_lang; }
+    std::string lang_name() const {
+        for (const auto& l : kLangs) if (lang() == l.code) return l.name;
+        return lang();
+    }
+    std::string release_for_ui() const {
+        const Release* r = release_for_lang(lang());
+        return r ? r->id : OWN_ID;
+    }
+    bool load_disc_art();
+    void switch_release();
+    bool ask_disc();
     void show_message(const std::string& m) { message = m; }
 
     void refresh_states() {
@@ -804,7 +903,7 @@ void MainMenu::render(App& a) {
     };
     muse(a.art.muse_a, 6, 100, 7); muse(a.art.muse_b, 40, 104, 6);
     muse(a.art.muse_c, 258, 100, 7); muse(a.art.muse_a, 224, 104, 5, true, 3);
-    const bool de = a.lang() == "de" && a.art.menu.size() == 4;
+    const bool de = a.disc_art() && a.art.menu.size() == 4;
     if (de) a.draw(a.art.menu[sel], 52, 98);
     for (int i = 0; i < 4; ++i) {
         if (!de) a.text(a.T("menu." + std::to_string(i)), W / 2.0f, 101 + i * 26, i == sel ? "blue" : "orange", "center");
@@ -813,7 +912,7 @@ void MainMenu::render(App& a) {
     const std::string lv = a.ctx.store.get("start_level");
     if (lv != "off") {
         auto it = a.art.level_name.find(lv);
-        if (a.lang() == "de" && it != a.art.level_name.end()) a.centered(it->second, 6);
+        if (a.disc_art() && it != a.art.level_name.end()) a.centered(it->second, 6);
         else a.text_block(a.level_name(lv), W / 2.0f, -5, "yellow", 300);
     }
     if (!a.hd_proc && a.upd_newer) a.upd_line(225);
@@ -856,7 +955,7 @@ void LevelScreen::render(App& a) {
     }
     const std::string label = lv == "off" ? a.T("level_normal") : a.T("level_n", {{"n", lv}});
     auto sp = a.art.level_name.find(lv == "off" ? "1" : lv);
-    if (a.lang() == "de" && sp != a.art.level_name.end()) {
+    if (a.disc_art() && sp != a.art.level_name.end()) {
         a.centered(sp->second, 134);
         a.text(label, W / 2.0f, std::round(134 + sp->second.h - a.art.font.height + 15 + 6), "yellow", "center");
     } else {
@@ -896,15 +995,16 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
     std::vector<std::pair<std::string, std::string>> langs;
     for (const auto& l : kLangs) langs.push_back({l.code, std::string("=") + l.name});
     return {
-        {"general", {{"language", langs}, {"updates", kOnOff}}},
+        {"general", {{"language", langs}, {"skip_intro", {{"false", "show"}, {"true", "skip"}}},
+                     {"updates", kOnOff}}},
         {"video", {{"internal_resolution", {{"native", "native"}, {"720p", "=720P"}, {"1080p", "=1080P"},
                                             {"1440p", "=1440P"}, {"4k", "=4K"}}},
                    {"aspect_ratio", {{"4:3", "ratio43"}, {"16:9", "ratio169"}}},
                    {"fullscreen", {{"0", "window"}, {"1", "full"}, {"2", "exclusive"}}},
                    {"vsync", {{"on", "on"}, {"adaptive", "adaptive"}, {"vrr", "=VRR"}, {"off", "off"}}},
                    {"preset", {{"original", "p_original"}, {"hd", "p_hd"}, {"custom", "p_custom"}}}}},
+        // frame_blend ("off"/"linear"/"adaptive") is hidden until CRT and overlays work with it
         {"gfx", {{"hd_build", {}}, {"hd_sprites", kOnOff}, {"hd_levels", kOnOff}, {"hd_hud", kOnOff},
-                 {"frame_blend", {{"off", "off"}, {"linear", "soft"}, {"adaptive", "adaptive"}}},
                  {"texture_filtering", {{"nearest", "sharp"}, {"bilinear", "soft"}, {"xbr", "=XBR"}}},
                  {"antialiasing", kOnOff}, {"perspective_texturing", kOnOff}, {"geometry_correction", kOnOff}}},
         {"filter", {{"crt_sim", kOnOff}, {"crt_mask", pct({0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1})},
@@ -917,6 +1017,7 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
     };
 }
 std::string current(App& a, const std::string& key) {
+    if (key == "language") return a.lang();     // none chosen: shows the system's
     return key == "preset" ? a.ctx.preset() : a.ctx.store.get(key);
 }
 int choice_index(const std::string& v, const std::vector<std::pair<std::string, std::string>>& ch) {
@@ -1061,6 +1162,9 @@ void LoadScreen::key(App& a, Key k) {
 // ------------------------------------------------------------------- play
 void App::play(int slot) {
     if (running) return;
+    // the chosen language's release: its disc first (ask for it), then its build
+    if (ctx.disc.empty() && !ask_disc()) return;
+    if (ctx.exe.empty()) { show_message(T("disc.no_build", {{"lang", lang_name()}})); return; }
     const fs::path pack = pack_for(ctx);
     write_settings(ctx);
     write_mod_state(ctx, pack, slot < 0);
@@ -1069,6 +1173,9 @@ void App::play(int slot) {
         SDL_UnsetEnvironmentVariable(env, k);
     if (slot >= 0) SDL_SetEnvironmentVariable(env, "PSX_LOAD_SLOT", std::to_string(slot).c_str(), true);
     SDL_SetEnvironmentVariable(env, "PSX_P1_KEYBOARD_TOO", "1", true);
+    // a build in lang/<id>/ keeps using the game folder's settings and keys
+    SDL_SetEnvironmentVariable(env, "PSX_HL_HOME", ctx.exe_dir.u8string().c_str(), true);
+    SDL_SetEnvironmentVariable(env, "PSX_KEYBINDS_INI", (ctx.exe_dir / "keybinds.ini").u8string().c_str(), true);
     SDL_SetEnvironmentVariable(env, "PSX_CRT", ctx.store.b("crt_sim") ? "1" : "0", true);
     SDL_SetEnvironmentVariable(env, "PSX_CRT_MASK", ctx.store.get("crt_mask").c_str(), true);
     SDL_SetEnvironmentVariable(env, "PSX_CRT_BLOOM", ctx.store.get("crt_bloom").c_str(), true);
@@ -1079,7 +1186,7 @@ void App::play(int slot) {
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)args);
     SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ENVIRONMENT_POINTER, env);
-    const std::string cwd = ctx.exe_dir.u8string();
+    const std::string cwd = ctx.game_dir.u8string();
     SDL_SetStringProperty(props, SDL_PROP_PROCESS_CREATE_WORKING_DIRECTORY_STRING, cwd.c_str());
     SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_INHERITED);
     SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_INHERITED);
@@ -1103,6 +1210,69 @@ void App::play(int slot) {
     refresh_states();
     if (hd_wanted() && !ctx.store.b("hd_started")) set("hd_started", "true");   // HD build starts now
     if (code) show_message(T("err.exit", {{"n", std::to_string(code)}}));
+}
+
+// --------------------------------------------------------- the releases
+// The art of the chosen release's disc, else of any disc the player gave.
+bool App::load_disc_art() {
+    fs::path p = ctx.disc;
+    std::string id = ctx.id;
+    for (const auto& r : kReleases) {
+        if (!p.empty()) break;
+        p = find_disc(ctx, r.id);
+        id = r.id;
+    }
+    if (p.empty()) return false;
+    Disc d;
+    Art fresh;
+    std::string err;
+    if (!d.open(p, &err) || !load_art(d, id, fresh, &err)) {
+        std::fprintf(stderr, "launcher: no art from %s: %s\n", p.u8string().c_str(), err.c_str());
+        return false;
+    }
+    // one look in every language: the German strip has the most letters
+    const fs::path de = id == "SCES-00893" ? fs::path{} : find_disc(ctx, "SCES-00893");
+    Disc dd;
+    std::vector<uint8_t> stp;
+    Font font;
+    if (!de.empty() && dd.open(de, &err) && dd.read("STP/STP1.", stp) && build_font(stp, font, &err))
+        fresh.font = std::move(font);
+    for (auto& [img, t] : tex) SDL_DestroyTexture(t);
+    tex.clear();
+    art = std::move(fresh);
+    art_lang = release(id).lang;
+    return true;
+}
+
+// The language picks the release: its build, disc, HD pack and saves.
+void App::switch_release() {
+    const std::string id = release_for_ui();
+    if (id == ctx.id) return;
+    hd_stop();
+    use_release(ctx, id);
+    hd = hd_read(ctx);
+    hd_gave_up = false;
+    refresh_states();
+    load_disc_art();
+}
+
+// No disc yet for the chosen release: say which one, let the player pick it.
+// A disc of another release is remembered for that one.
+bool App::ask_disc() {
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Hercules Recompiled",
+                             T("disc.need", {{"lang", lang_name()}, {"id", ctx.id}}).c_str(), win);
+    const fs::path p = pick_disc(win);
+    if (p.empty()) return false;
+    const std::string got = disc_release(p);
+    if (got.empty()) { show_message(T("disc.none")); return false; }
+    remember_disc(ctx, p, got);
+    if (got != ctx.id) {
+        show_message(T("disc.wrong", {{"got", got}, {"lang", lang_name()}, {"id", ctx.id}}));
+        return false;
+    }
+    ctx.disc = p;
+    load_disc_art();
+    return true;
 }
 
 // ------------------------------------------------------------ HD build
@@ -1192,6 +1362,8 @@ void App::hd_line(float y) {
         if (m < 60) std::snprintf(eta, sizeof eta, "%ld MIN", m);
         else std::snprintf(eta, sizeof eta, "%ld:%02ld H", m / 60, m % 60);
         msg = T("hd_progress", {{"p", std::to_string(p)}, {"eta", eta}});
+    } else if (hd.phase == "download" || hd.phase == "install") {   // the ready pack (hd_auto.py)
+        msg = T("hd_download", {{"p", std::to_string(p)}});
     } else {
         msg = T("hd_setup", {{"p", std::to_string(p)}});
     }
@@ -1415,7 +1587,7 @@ void App::upd_restart() {
     if (!fs::exists(py)) py = hd_python(ctx);
     if (!fs::exists(script)) script = upd_dir(ctx) / "updater.py";
     const std::string a_py = py.u8string(), a_script = script.u8string(), a_game = ctx.exe_dir.u8string(),
-                      a_exe = ctx.exe.u8string();
+                      a_exe = ctx.launcher_exe.u8string();
     const char* args[] = {a_py.c_str(), a_script.c_str(), "apply", "--game", a_game.c_str(), "--wait-pid", pid.c_str(),
                           "--relaunch", a_exe.c_str(), nullptr};
     SDL_PropertiesID props = SDL_CreateProperties();
@@ -1486,32 +1658,57 @@ void UpdateScreen::key(App& a, Key k) {
 }
 
 // ---------------------------------------------------------- disc lookup
-bool is_hercules(const fs::path& p, std::string* err) {
+// Which PAL release of Hercules a disc image is ("" = none), from the boot
+// file SYSTEM.CNF names.
+std::string disc_release(const fs::path& p) {
     Disc d;
-    if (!d.open(p, err)) return false;
+    std::string err;
     std::vector<uint8_t> cnf;
-    if (!d.read("SYSTEM.CNF", cnf) || std::string(cnf.begin(), cnf.end()).find("SCES_008.93") == std::string::npos) {
-        if (err) *err = "This is not the German PAL release of Hercules (SCES-00893).";
-        return false;
-    }
-    return true;
+    if (!d.open(p, &err) || !d.read("SYSTEM.CNF", cnf)) return "";
+    const std::string t(cnf.begin(), cnf.end());
+    for (const auto& r : kReleases) if (t.find(r.boot) != std::string::npos) return r.id;
+    return "";
 }
 
-fs::path find_disc(Ctx& c) {
-    std::string err;
+// One disc per release: disc.cfg (the German one, as before) or disc-<id>.cfg.
+fs::path disc_cfg(const Ctx& c, const std::string& id) {
+    return c.exe_dir / (id == "SCES-00893" ? std::string("disc.cfg") : "disc-" + id + ".cfg");
+}
+
+fs::path find_disc(const Ctx& c, const std::string& id) {
     auto it = c.game.find("game.disc");
-    if (it != c.game.end() && !it->second.empty()) {
+    if (id == c.id && it != c.game.end() && !it->second.empty()) {
         fs::path p = fs::u8path(it->second);
-        if (p.is_relative()) p = find_up(c.exe_dir, p);
-        if (!p.empty() && is_hercules(p, &err)) return p;
+        if (p.is_relative()) p = find_up(c.game_dir, p);
+        if (!p.empty() && disc_release(p) == id) return p;
     }
-    const std::string cached = trim(read_text(c.exe_dir / "disc.cfg"));
+    const std::string cached = trim(read_text(disc_cfg(c, id)));
     if (!cached.empty()) {
         fs::path p = fs::u8path(cached);
         if (p.is_relative()) p = c.exe_dir / p;
-        if (is_hercules(p, &err)) return p;
+        if (disc_release(p) == id) return p;
     }
     return {};
+}
+
+void remember_disc(const Ctx& c, const fs::path& p, const std::string& id) {
+    std::error_code ec;
+    const fs::path rel = fs::relative(p, c.exe_dir, ec);
+    write_atomic(disc_cfg(c, id), (ec || rel.empty() ? p : rel).generic_u8string() + "\n");
+}
+
+// Point the context at release id: its build (here, or lang/<id>/), its
+// game.toml and its disc.
+void use_release(Ctx& c, const std::string& id) {
+    c.id = id;
+    const fs::path sub = c.exe_dir / "lang" / id;
+    c.game_dir = id == OWN_ID && !fs::exists(sub / "game.toml") ? c.exe_dir : sub;
+    c.exe.clear();
+    for (const char* n : {"Hercules_Recompiled.exe", "Hercules_Recompiled"})
+        if (fs::exists(c.game_dir / n)) { c.exe = c.game_dir / n; break; }
+    c.game_toml = c.game_dir / "game.toml";
+    c.game = toml_flat(read_text(c.game_toml));
+    c.disc = find_disc(c, id);
 }
 
 // SDL's native file dialog runs asynchronously; pump events until it answers.
@@ -1549,21 +1746,20 @@ int launcher_main(int argc, char** argv) {
     Ctx& c = app.ctx;
     const char* base = SDL_GetBasePath();
     c.exe_dir = base ? fs::u8path(base) : fs::current_path();
-    c.exe = fs::u8path(argv[0]);
-    if (c.exe.is_relative() || !fs::exists(c.exe)) {
+    c.launcher_exe = fs::u8path(argv[0]);
+    if (c.launcher_exe.is_relative() || !fs::exists(c.launcher_exe)) {
         for (const char* n : {"Hercules_Recompiled.exe", "Hercules_Recompiled"})
-            if (fs::exists(c.exe_dir / n)) { c.exe = c.exe_dir / n; break; }
+            if (fs::exists(c.exe_dir / n)) { c.launcher_exe = c.exe_dir / n; break; }
     }
-    c.game_toml = c.exe_dir / "game.toml";
-    c.game = toml_flat(read_text(c.game_toml));
     c.store.path = c.exe_dir / "launcher.ini";
     c.store.load();
+    use_release(c, app.release_for_ui());
+    if (c.exe.empty() && c.id == OWN_ID) c.exe = c.launcher_exe;
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         std::fprintf(stderr, "launcher: SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
-    if (c.store.get("language").empty()) c.store.kv["language"] = system_language();
     app.win = SDL_CreateWindow("Hercules Recompiled", 1024, 768, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     app.ren = app.win ? SDL_CreateRenderer(app.win, nullptr) : nullptr;
     if (!app.ren) {
@@ -1573,29 +1769,21 @@ int launcher_main(int argc, char** argv) {
     }
     SDL_SetRenderVSync(app.ren, 1);
 
-    c.disc = find_disc(c);
-    while (c.disc.empty()) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Hercules Recompiled",
-            "Please select your Hercules disc image (German PAL release, SCES-00893): the .cue file of your dump.",
-            app.win);
+    // The launcher draws itself from a disc: the chosen release's, else any
+    // the player gave. With none at all, ask for one; a disc of another
+    // release than the language's switches the language to it.
+    while (!app.load_disc_art()) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Hercules Recompiled", app.T("disc.first").c_str(), app.win);
         const fs::path p = pick_disc(app.win);
         if (p.empty()) { SDL_Quit(); return 0; }
-        std::string err;
-        if (is_hercules(p, &err)) {
-            c.disc = p;
-            std::error_code ec;
-            const fs::path rel = fs::relative(p, c.exe_dir, ec);
-            write_atomic(c.exe_dir / "disc.cfg", (ec || rel.empty() ? p : rel).generic_u8string() + "\n");
-        } else {
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Hercules Recompiled", err.c_str(), app.win);
+        const std::string got = disc_release(p);
+        if (got.empty()) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Hercules Recompiled", app.T("disc.none").c_str(), app.win);
+            continue;
         }
-    }
-    Disc disc;
-    std::string err;
-    if (!disc.open(c.disc, &err) || !load_art(disc, app.art, &err)) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Hercules Recompiled", ("Cannot read the disc: " + err).c_str(), app.win);
-        SDL_Quit();
-        return 1;
+        remember_disc(c, p, got);
+        if (got != c.id) app.set("language", release(got).lang);
+        else c.disc = p;
     }
     app.stage = SDL_CreateTexture(app.ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_TARGET, W * SC, H * SC);
     SDL_SetTextureScaleMode(app.stage, SDL_SCALEMODE_LINEAR);
@@ -1680,6 +1868,8 @@ struct Canvas {
 
 struct Menu {
     bool loaded = false, failed = false, open = false, dirty = true, quit_armed = false;
+    bool levels_note = false;     // HD scenery switched on: it shows from the next level
+    int capture = -1;             // keys page: button waiting for its new key
     Ctx ctx;
     Font font;
     Image plaster;
@@ -1690,10 +1880,16 @@ struct Menu {
 };
 Menu m;
 
+// the launcher's language: the chosen one, else the system's
+std::string menu_lang() {
+    const std::string l = m.ctx.store.get("language");
+    if (kStrings.count(l)) return l;
+    static const std::string sys = system_language();
+    return sys;
+}
+
 std::string T(const std::string& key) {
-    std::string l = m.ctx.store.get("language");
-    if (!kStrings.count(l)) l = "en";
-    const auto& tbl = kStrings.at(l);
+    const auto& tbl = kStrings.at(menu_lang());
     auto it = tbl.find(key);
     return it == tbl.end() ? key : it->second;
 }
@@ -1723,6 +1919,34 @@ void text(const std::string& s, float x, float y, const char* color, const char*
 struct MRow { std::string key; std::vector<std::pair<std::string, std::string>> choices; };
 struct MPage { std::string title; std::vector<MRow> rows; };
 
+// The PlayStation buttons Hercules uses; L3/R3 and the sticks stay as they are.
+const int kRebind[] = {PSX_KB_UP, PSX_KB_DOWN, PSX_KB_LEFT, PSX_KB_RIGHT, PSX_KB_CROSS, PSX_KB_CIRCLE,
+                       PSX_KB_SQUARE, PSX_KB_TRIANGLE, PSX_KB_L1, PSX_KB_R1, PSX_KB_L2, PSX_KB_R2,
+                       PSX_KB_START, PSX_KB_SELECT};
+
+std::string key_label(int button) {
+    const SDL_Scancode sc = psx_keybinds_get_button(1, button);
+    if (sc == SDL_SCANCODE_UNKNOWN) return "-";
+    std::string n = SDL_GetScancodeName(sc);
+    for (char& ch : n) ch = char(std::toupper((unsigned char)ch));
+    return n.empty() ? "?" : n;
+}
+
+// A new key for one button. The framework frees the key from any other
+// button, so it cannot also stay on the left stick (by default the arrow keys
+// drive both); Hercules reads only the digital pad, so a rebound direction
+// clears the stick's key instead of leaving the old one there.
+void rebind(int button, SDL_Scancode sc) {
+    psx_keybinds_set_button(1, button, sc);
+    const int stick = button == PSX_KB_UP ? PSX_KB_LS_UP : button == PSX_KB_DOWN ? PSX_KB_LS_DOWN
+                    : button == PSX_KB_LEFT ? PSX_KB_LS_LEFT : button == PSX_KB_RIGHT ? PSX_KB_LS_RIGHT : -1;
+    if (stick >= 0) {
+        psx_keybinds_set_button(1, stick, SDL_SCANCODE_UNKNOWN);
+        psx_keybinds_set_button_alt(1, stick, SDL_SCANCODE_UNKNOWN);
+    }
+    psx_keybinds_save();
+}
+
 std::vector<MPage> menu_pages() {
     auto from_launcher = [](const char* key) {
         for (const auto& [name, rows] : pages())
@@ -1745,7 +1969,11 @@ std::vector<MPage> menu_pages() {
     MRow vol{"volume", {}};
     for (int v = 0; v <= 100; v += 10) vol.choices.push_back({std::to_string(v), "=" + std::to_string(v) + " %"});
     out.push_back({"sound", {vol}});
-    out.push_back({"keys", {}});
+    MPage keys{"keys", {}};                      // player 1's keyboard keys, live (keybinds.ini)
+    for (int b : kRebind) keys.rows.push_back({std::string("kb.") + psx_keybinds_button_name(b), {}});
+    keys.rows.push_back({"act.kb_reset", {}});
+    out.push_back(keys);
+    out.push_back({"hotkeys", {}});              // what cannot be changed here
     return out;
 }
 
@@ -1773,6 +2001,7 @@ float num(const std::string& k, float def) {
 void apply(const std::string& key) {
     const auto& st = m.ctx.store;
     if (key == "hd_sprites" || key == "hd_levels" || key == "hd_hud") {
+        if (key == "hd_levels") m.levels_note = st.b("hd_levels");
         const fs::path pack = pack_for(m.ctx);
         psx_host_set_hd_pack(pack.empty() ? "" : pack.u8string().c_str());
     } else if (key == "texture_filtering") {
@@ -1812,14 +2041,27 @@ void render() {
     const MPage& pg = ps[size_t(m.page) % ps.size()];
     text("< " + T("pages." + pg.title) + " >", W / 2.0f, 6, m.row == 0 ? "blue" : "yellow", "center");
     if (pg.title == "keys") {
-        std::string l = m.ctx.store.get("language");
-        if (!kStrings.count(l)) l = "en";
-        for (int i = 0; i < 20; ++i) {
+        for (size_t i = 0; i < pg.rows.size(); ++i) {
+            const MRow& r = pg.rows[i];
+            const bool active = m.row == int(i) + 1;
+            const float y = 28 + i * 11.6f;
+            if (i < std::size(kRebind)) {
+                text(T(r.key), 14, y, active ? "blue" : "yellow", "left", 0.6f);
+                const bool waiting = m.capture == kRebind[i];
+                text(waiting ? T("kb.press") : key_label(kRebind[i]), 306, y,
+                     waiting ? "blue" : active ? "blue" : "orange", "right", 0.6f);
+            } else {
+                text(T("kb.reset"), W / 2.0f, y + 4, active ? "blue" : "yellow", "center", 0.6f);
+            }
+        }
+    } else if (pg.title == "hotkeys") {
+        const std::string l = menu_lang();
+        for (int i = 5; i < 20; ++i) {               // 0..4 are the game buttons (page TASTEN)
             auto it = kStrings.at(l).find("ingame.keys." + std::to_string(i));
             if (it == kStrings.at(l).end()) break;
             const std::string& line = it->second;
             const size_t bar = line.find('|');
-            const float y = 32 + i * 13.5f;
+            const float y = 32 + (i - 5) * 16.0f;
             text(line.substr(0, bar), 14, y, "orange", "left", 0.6f);
             if (bar != std::string::npos) text(line.substr(bar + 1), 108, y, "yellow", "left", 0.6f);
         }
@@ -1838,13 +2080,17 @@ void render() {
             }
         }
         if (pg.title == "pause") text(T("ingame.hint"), W / 2.0f, 150, "orange", "center", 0.6f);
+        // level textures are matched when a level uploads them, so switching
+        // HD scenery back on shows from the next level (BUG-20261014-004)
+        if (pg.title == "gfx" && m.levels_note)
+            text(T("ingame.hd_levels_next"), W / 2.0f, 203, "orange", "center", 0.6f);
     }
     text(T("help_back"), W / 2.0f, 218, "yellow", "center", 0.7f);
     m.dirty = false;
 }
 
 // ---------------------------------------------------------------- input
-void close_menu() { m.open = false; m.quit_armed = false; }
+void close_menu() { m.open = false; m.quit_armed = false; m.levels_note = false; m.capture = -1; }
 
 void step(int d) {
     const auto ps = menu_pages();
@@ -1856,6 +2102,8 @@ void step(int d) {
     if (r.choices.empty()) {                     // actions: on OK only
         if (d != 0) return;
         if (r.key == "act.resume") close_menu();
+        else if (r.key == "act.kb_reset") { psx_keybinds_reset_player(1); psx_keybinds_save(); m.dirty = true; }
+        else if (r.key.rfind("kb.", 0) == 0) { m.capture = kRebind[m.row - 1]; m.dirty = true; }
         else if (r.key == "act.quit") {
             if (!m.quit_armed) { m.quit_armed = true; m.dirty = true; return; }
             m.ctx.store.save();
@@ -1895,16 +2143,21 @@ bool load() {
     m.loaded = true;
     Ctx& c = m.ctx;
     const char* base = SDL_GetBasePath();
-    c.exe_dir = base ? fs::u8path(base) : fs::current_path();
-    c.game_toml = c.exe_dir / "game.toml";
-    c.game = toml_flat(read_text(c.game_toml));
+    const char* home = SDL_getenv("PSX_HL_HOME");     // a build in lang/<id>/, started by the launcher
+    c.exe_dir = home && *home ? fs::u8path(home) : base ? fs::u8path(base) : fs::current_path();
     c.store.path = c.exe_dir / "launcher.ini";
     c.store.load();
-    c.disc = find_disc(c);
+    use_release(c, OWN_ID);
     Disc d;
     std::vector<uint8_t> b;
     std::string err;
-    if (c.disc.empty() || !d.open(c.disc, &err) || !d.read("STP/STP1.", b) || !build_font(b, m.font, &err)) {
+    // the font as in the launcher: the German disc's strip if there is one
+    const fs::path de = find_disc(c, "SCES-00893");
+    const fs::path font_disc = de.empty() ? c.disc : de;
+    const std::string font_id = de.empty() ? c.id : "SCES-00893";
+    Disc fd;
+    if (font_disc.empty() || !fd.open(font_disc, &err) || !fd.read("STP/STP1.", b) ||
+        !build_font(b, m.font, &err, font_id) || c.disc.empty() || !d.open(c.disc, &err)) {
         std::fprintf(stderr, "hercules menu: no disc art (%s)\n", err.c_str());
         m.failed = true;
         return false;
@@ -1929,7 +2182,16 @@ void hook_open() {
     m.dirty = true;
 }
 int hook_is_open() { return m.open ? 1 : 0; }
-void hook_key(int key, int, int, int repeat) {
+void hook_key(int key, int scancode, int, int repeat) {
+    if (m.capture >= 0) {                        // waiting for a new key
+        if (repeat) return;
+        const SDL_Scancode sc = SDL_Scancode(scancode);
+        const bool host = (sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F12) || sc == SDL_SCANCODE_TAB;
+        if (key != SDLK_ESCAPE && !host && sc != SDL_SCANCODE_UNKNOWN) rebind(m.capture, sc);
+        m.capture = -1;                          // Esc (or a host key) cancels
+        m.dirty = true;
+        return;
+    }
     switch (key) {
     case SDLK_UP: nav(Key::Up); break;
     case SDLK_DOWN: nav(Key::Down); break;
@@ -1952,6 +2214,10 @@ void hook_tick(uint32_t now) {
         else if (now >= m.pad_repeat_at) { fire |= b & dirs; m.pad_repeat_at = now + 110; }
     }
     m.pad_prev = b;
+    if (m.capture >= 0) {                        // keys are rebound from the keyboard only
+        if (pressed) { m.capture = -1; m.dirty = true; }
+        return;
+    }
     if (fire & bit(SDL_GAMEPAD_BUTTON_DPAD_UP)) nav(Key::Up);
     if (fire & bit(SDL_GAMEPAD_BUTTON_DPAD_DOWN)) nav(Key::Down);
     if (fire & bit(SDL_GAMEPAD_BUTTON_DPAD_LEFT)) nav(Key::Left);

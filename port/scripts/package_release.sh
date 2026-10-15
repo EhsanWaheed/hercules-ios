@@ -87,3 +87,33 @@ with zipfile.ZipFile(zip_path, "a", zipfile.ZIP_DEFLATED) as z:
         z.write(tools / t, f"hd/tools/{t}")
 print(f"added hd/ ({len(TOOLS)} tools) and update/ to {zip_path}")
 PY
+
+# The other PAL releases (the launcher starts the build for the language the
+# player picks): HERC_EXTRA_BUILDS="build-linux-SCES-00891 ...", each staged as
+# lang/<id>/ (scripts/stage_release_build.sh) and added to the archive.
+if [[ -n "${HERC_EXTRA_BUILDS:-}" ]]; then
+  STAGE="$(mktemp -d)"
+  trap 'rm -rf "${STAGE}"' EXIT
+  for b in ${HERC_EXTRA_BUILDS}; do
+    bash "${ROOT}/scripts/stage_release_build.sh" "${b}" "${STAGE}"
+  done
+  python3 - "${ZIP}" "${STAGE}" <<'PY'
+import os, sys, zipfile
+from pathlib import Path
+zip_path, stage = sys.argv[1], Path(sys.argv[2])
+n = 0
+with zipfile.ZipFile(zip_path, "a", zipfile.ZIP_DEFLATED) as z:
+    for f in sorted(stage.rglob("*")):
+        rel = f.relative_to(stage).as_posix()
+        if f.is_dir():
+            if not any(f.iterdir()):                       # lang/<id>/saves/
+                z.writestr(zipfile.ZipInfo(rel + "/"), "")
+            continue
+        info = zipfile.ZipInfo.from_file(f, rel)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        with open(f, "rb") as src:
+            z.writestr(info, src.read())
+        n += 1
+print(f"added lang/ ({n} files) to {zip_path}")
+PY
+fi

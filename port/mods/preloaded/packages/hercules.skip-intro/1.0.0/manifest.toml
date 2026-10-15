@@ -10,6 +10,18 @@ save_compatibility = "shared"
 [[target]]
 game_id = "SCES-00893"
 
+[[target]]
+game_id = "SCES-00891"
+
+[[target]]
+game_id = "SCES-00892"
+
+[[target]]
+game_id = "SCES-00894"
+
+[[target]]
+game_id = "SCES-00895"
+
 [[feature]]
 id = "skip-intro"
 name = "Skip intro screens"
@@ -28,6 +40,13 @@ default_enabled = false
 id = "direct-start"
 name = "Start a new game directly"
 description = "Skips the title menu: a cold boot goes straight to the chosen level's story movie, intro screen and level (the launcher is the menu)."
+group = "Gameplay"
+default_enabled = false
+
+[[feature]]
+id = "skip-fmv"
+name = "Skip movies"
+description = "Skips every FMV (intro and the story movies between levels) as soon as it starts."
 group = "Gameplay"
 default_enabled = false
 
@@ -94,3 +113,7 @@ id = "hercules.skip-memcard"
 [[plugin]]
 feature = "direct-start"
 id = "hercules.direct-start"
+
+[[plugin]]
+feature = "skip-fmv"
+id = "hercules.skip-fmv"
