@@ -76,11 +76,19 @@ gte_game_mode = true
 # vanilla by the generator.
 [widescreen.cull]
 # ENGINE1 func_80045F90 / func_800464DC: lhu SX; sltiu v0,v0,0x141 (0..320)
-screen_x_sites = ["0x80046188", "0x80046818"]
+# + objects (issue #4): the sprite drawers ENGINE1 func_8003E5D8 / ENGINE3
+#   func_8003D9B8 draw an object at once while its x is 0..320 (sltiu 0x141),
+#   else only if its frame's box still reaches the screen (ENGINE1
+#   func_8004495C / ENGINE3 func_80041584: right edge < 0 -> bltz below, left
+#   edge > 320 -> slti 0x141 below). Widened, objects in the 16:9 margins are
+#   drawn instead of appearing once they reach the 4:3 picture.
+screen_x_sites = ["0x80046188", "0x80046818", "0x8003E690", "0x8003DA70"]
 # ENGINE1 rotated path (slti SX,0x141) and ENGINE3 func_80042EB0 /
 # func_80043148 / func_80044480 right edges (0x141, 0x161)
-slti_sites = ["0x80046228", "0x80042FAC", "0x8004328C", "0x800445B0", "0x80042F7C", "0x80042F90", "0x8004325C", "0x80043270", "0x80044580", "0x80044594"]
+slti_sites = ["0x80046228", "0x80042FAC", "0x8004328C", "0x800445B0", "0x80042F7C", "0x80042F90", "0x8004325C", "0x80043270", "0x80044580", "0x80044594", "0x80044A98", "0x800416C0"]
 # ENGINE3 left edges: slti v0,v0,-0x20
 slti_lower_sites = ["0x80042FC4", "0x800432A4", "0x800445C8"]
 # left edges as `bgez SX, keep`: ENGINE1 rotated path, ENGINE3 dir 1
 bgez_sites = ["0x80046244", "0x80042F78", "0x80043258", "0x8004457C"]
+# objects' right edge (frame box): `bltz x + right, offscreen` (see screen_x_sites)
+bltz_sites = ["0x80044A78", "0x800416A0"]
