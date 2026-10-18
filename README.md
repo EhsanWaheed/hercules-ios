@@ -76,12 +76,15 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 
 ## Good to know
 
-- **Frame rate.** As on the PlayStation, the game draws 25 pictures per
-  second (one every second PAL frame). On a 60 Hz screen they alternate
-  between two and three refreshes, which reads as a slight stutter; on a
-  50 Hz (or 100 Hz) screen every picture is shown for the same time.
-  Generated in-between frames (blending, optical flow, AI interpolation) were
-  tried and looked worse than the original pictures, so the game keeps its own.
+- **Speed and frame rate.** From 0.5.5 the PAL releases run at the speed of
+  the US release (SLUS-01029) by default: 60 Hz timing, so the game takes 30
+  steps and draws 30 pictures per second instead of 25. Music and movies keep
+  their speed. On a 60 Hz screen every picture now stays exactly two
+  refreshes, so the slight stutter of 25 pictures on 60 Hz is gone. For the
+  original PAL speed set *General → Game speed → PAL* in the launcher.
+  60 fps is not possible: both the PAL and the US game wait a fixed two video
+  frames per step, and generated in-between frames (blending, optical flow,
+  AI interpolation) were tried and looked worse than the original pictures.
 - **Widescreen.** In 16:9 the game draws the extra width itself: scenery,
   far background and the HUD at the screen edges, and from 0.5.4 also the
   characters and objects in the side margins.
@@ -94,9 +97,9 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 | Folder | What |
 |--------|------|
 | [`decomp/`](decomp) | Decompilation of the main executable and the overlays (splat + GCC 2.7.2 / maspsx, byte-identical rebuild), file-format notes (levels, sprites, videos), tools for extraction, HD upscaling and texture packs |
-| [`port/`](port) | The PC port, built on [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp): game configuration, game-specific mods (HD sprites, widescreen, level select, skip intro / direct start) and the launcher |
+| [`port/`](port) | The PC port, built on [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp): game configuration, game-specific mods (HD sprites, widescreen, level select, skip intro / direct start, NTSC speed) and the launcher |
 | `port/psxrecomp` | Submodule: the upstream framework |
-| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Ten framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames; freezing the F4 inspector's picture to mark objects; semi-transparent draws keeping the original texture) |
+| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Eleven framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames; freezing the F4 inspector's picture to mark objects; semi-transparent draws keeping the original texture; NTSC timing for a PAL game as a mod option) |
 
 ## Getting started
 

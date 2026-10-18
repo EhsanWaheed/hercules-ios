@@ -1,0 +1,161 @@
+From 0e205fc3ad41885e063ef136c59ebb66bb4c09ba Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 13:12:27 +0200
+Subject: [PATCH] NTSC timing for a PAL game (mod option and
+ PSX_FORCE_NTSC_TIMING)
+
+psx_video_timing_force_ntsc() runs PAL video modes on NTSC frame period,
+HBlank clock and line count while the GPU keeps the PAL picture, like
+"force NTSC timings" in emulators. Mods switch it with
+psx_mod_set_ntsc_timing(); it is cleared per session.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ overlay_toolchain/include/mod_plugins.h |  8 +++++++
+ runtime/include/mod_plugins.h           |  8 +++++++
+ runtime/include/psx_video_timing.h      |  4 ++++
+ runtime/src/main.cpp                    | 13 +++++++++++
+ runtime/src/psx_video_timing.c          | 30 +++++++++++++++++++++++--
+ 5 files changed, 61 insertions(+), 2 deletions(-)
+
+diff --git a/overlay_toolchain/include/mod_plugins.h b/overlay_toolchain/include/mod_plugins.h
+index 3c3422f..e8c303c 100644
+--- a/overlay_toolchain/include/mod_plugins.h
++++ b/overlay_toolchain/include/mod_plugins.h
+@@ -523,6 +523,14 @@ uint32_t psx_mod_render_pass_frame(struct CPUState* cpu,
+ int psx_mod_run_guest_span(struct CPUState* cpu, uint32_t start_pc,
+                            uint32_t stop_pc);
+ int psx_mod_set_auto_skip_fmv(int enabled);
++/*
++ * NTSC timing for a PAL game ("force NTSC timings" in emulators): 60 VBlanks
++ * per guest second with NTSC line timing while the GPU keeps the PAL picture,
++ * so a game that steps once per N VBlanks runs at NTSC speed. CPU, SPU and CD
++ * keep their clocks; anything the game derives from GetVideoMode() (libsnd's
++ * ticks per second, for one) is the mod's to adjust. Cleared per session.
++ */
++int psx_mod_set_ntsc_timing(int enabled);
+ /*
+  * Draw still artwork behind the game image in OpenGL letterbox/pillarbox
+  * margins. The image path is an owner-selected mod resource; with no enabled
+diff --git a/runtime/include/mod_plugins.h b/runtime/include/mod_plugins.h
+index 81e9228..7d4d37e 100644
+--- a/runtime/include/mod_plugins.h
++++ b/runtime/include/mod_plugins.h
+@@ -794,6 +794,14 @@ uint32_t psx_mod_render_pass_frame(struct CPUState* cpu,
+ int psx_mod_run_guest_span(struct CPUState* cpu, uint32_t start_pc,
+                            uint32_t stop_pc);
+ int psx_mod_set_auto_skip_fmv(int enabled);
++/*
++ * NTSC timing for a PAL game ("force NTSC timings" in emulators): 60 VBlanks
++ * per guest second with NTSC line timing while the GPU keeps the PAL picture,
++ * so a game that steps once per N VBlanks runs at NTSC speed. CPU, SPU and CD
++ * keep their clocks; anything the game derives from GetVideoMode() (libsnd's
++ * ticks per second, for one) is the mod's to adjust. Cleared per session.
++ */
++int psx_mod_set_ntsc_timing(int enabled);
+ /*
+  * Draw still artwork behind the game image in OpenGL letterbox/pillarbox
+  * margins. The image path is an owner-selected mod resource; with no enabled
+diff --git a/runtime/include/psx_video_timing.h b/runtime/include/psx_video_timing.h
+index 1769fd1..ae50bb4 100644
+--- a/runtime/include/psx_video_timing.h
++++ b/runtime/include/psx_video_timing.h
+@@ -46,6 +46,10 @@ static inline int psx_gp1_display_mode_is_pal(uint32_t word) {
+ 
+ /* Select the video standard. Returns 1 when it changed. */
+ int      psx_video_timing_set_pal(int pal);
++/* Run PAL video modes on NTSC timing (frame period, HBlank clock, lines);
++ * the picture stays PAL. Negative: back to PSX_FORCE_NTSC_TIMING (off when
++ * unset). Returns 1 when the timing changed. */
++int      psx_video_timing_force_ntsc(int on);
+ int      psx_video_timing_is_pal(void);
+ /* Bumped on every change; host-side observers (pacing) compare it. */
+ uint32_t psx_video_timing_generation(void);
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 66ada25..9bf05c8 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -1766,6 +1766,7 @@ static PSXModSessionBaseline g_mod_owned_baseline;
+ 
+ static void reset_mod_owned_presentation(void) {
+     psx_mod_internal_resolution_reset();
++    psx_video_timing_force_ntsc(-1);
+     psx_local_mouse_clear();
+     PSXModSessionScalars live;
+     live.video_vsync = g_video_vsync;
+@@ -1954,6 +1955,18 @@ extern "C" int psx_mod_set_auto_skip_fmv(int enabled) {
+     return 1;
+ }
+ 
++extern "C" int psx_mod_set_ntsc_timing(int enabled) {
++    if (enabled != 0 && enabled != 1) {
++        std::fprintf(stderr,
++            "psxrecomp: mod rejected invalid NTSC timing value %d\n", enabled);
++        return 0;
++    }
++    psx_video_timing_force_ntsc(enabled);
++    std::fprintf(stdout, "psxrecomp: mod %s NTSC timing for PAL video\n",
++                 enabled ? "enabled" : "disabled");
++    return 1;
++}
++
+ extern "C" int psx_mod_set_bezel_artwork(const char* path) {
+     if (!path || !path[0]) {
+         std::fprintf(stderr, "psxrecomp: mod rejected empty bezel artwork path\n");
+diff --git a/runtime/src/psx_video_timing.c b/runtime/src/psx_video_timing.c
+index c008707..9f76cb4 100644
+--- a/runtime/src/psx_video_timing.c
++++ b/runtime/src/psx_video_timing.c
+@@ -1,14 +1,30 @@
+ #include "psx_video_timing.h"
+ 
++#include <stdlib.h>
++
+ uint32_t g_psx_vblank_cycles   = PSX_VBLANK_CYCLES_NTSC;
+ uint32_t g_psx_hblank_cycles   = PSX_HBLANK_CYCLES_NTSC;
+ uint32_t g_psx_lines_per_frame = PSX_LINES_PER_FRAME_NTSC;
+ 
+ static int      s_pal;
++static int      s_requested_pal;   /* what GP1(08h) selected */
++static int      s_force_ntsc = -1; /* -1: read PSX_FORCE_NTSC_TIMING once */
+ static uint32_t s_generation;
+ 
+-int psx_video_timing_set_pal(int pal) {
+-    pal = pal ? 1 : 0;
++/* NTSC timing for a PAL game ("force NTSC timings" in emulators): the GPU
++ * keeps its PAL picture (its own display mode), only the frame period, the
++ * HBlank clock and the line count follow NTSC, so a game that steps once per
++ * VBlank runs at NTSC speed while the CPU, SPU and CD keep their clocks. */
++static int force_ntsc(void) {
++    if (s_force_ntsc < 0) {
++        const char *e = getenv("PSX_FORCE_NTSC_TIMING");
++        s_force_ntsc = (e && *e && *e != '0') ? 1 : 0;
++    }
++    return s_force_ntsc;
++}
++
++static int apply(void) {
++    const int pal = s_requested_pal && !force_ntsc();
+     if (pal == s_pal)
+         return 0;
+     s_pal = pal;
+@@ -19,6 +35,16 @@ int psx_video_timing_set_pal(int pal) {
+     return 1;
+ }
+ 
++int psx_video_timing_set_pal(int pal) {
++    s_requested_pal = pal ? 1 : 0;
++    return apply();
++}
++
++int psx_video_timing_force_ntsc(int on) {
++    s_force_ntsc = on < 0 ? -1 : on ? 1 : 0;
++    return apply();
++}
++
+ int psx_video_timing_is_pal(void) {
+     return s_pal;
+ }
+-- 
+2.56.0
+
