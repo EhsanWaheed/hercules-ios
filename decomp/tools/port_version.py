@@ -64,6 +64,8 @@ SYMBOLS = [
     ("LEVEL", "main", "data", 0x80035048),
     ("DEMO_FLAG_A", "main", "data", 0x8003504E),
     ("DEMO_FLAG_B", "main", "data", 0x80035050),
+    # hercules_ntsc_speed.c: SsSetTickMode's PAL store of 50 ticks/s
+    ("SND_TICK_PAL_SITE", "main", "code", 0x800211E8),
     # hercules_widescreen.c: HUD helpers, backdrop column loops
     ("E1_HUD_SITE", "engine1", "code", 0x8004A050),
     ("E1_HUD_CHECK_SITE", "engine1", "code", 0x80049FE8),
@@ -101,7 +103,7 @@ TOML_LISTS = {
                               ("engine1", 0x8004A050), ("engine3", 0x80046E04),
                               ("engine1", 0x8003D3B0), ("engine1", 0x8003D420), ("engine1", 0x8003D4AC),
                               ("engine1", 0x8003D5F4), ("engine3", 0x8003C27C), ("engine3", 0x8003C2EC),
-                              ("engine3", 0x8003C378), ("engine3", 0x8003C4C0)],
+                              ("engine3", 0x8003C378), ("engine3", 0x8003C4C0), ("main", 0x800211E8)],
     "screen_x_sites": [("engine1", 0x800461C0), ("engine1", 0x80046850),
                        ("engine1", 0x8003E6C8), ("engine3", 0x8003DAA8)],
     "slti_sites": [("engine1", 0x80046260), ("engine3", 0x80042FE4), ("engine3", 0x800432C4),
