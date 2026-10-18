@@ -166,7 +166,7 @@ const Setting kSettings[] = {
     {"hd_levels", "b", "true"}, {"hd_hud", "b", "true"}, {"start_level", "s", "off"},
     {"crt_sim", "b", "false"}, {"crt_mask", "f", "0.5"}, {"crt_bloom", "f", "0.35"},
     {"skip_intro", "b", "true"}, {"skip_memcard", "b", "true"}, {"language", "s", ""}, {"fast_cd", "b", "true"},
-    {"updates", "b", "true"}, {"frame_blend", "s", "off"},
+    {"updates", "b", "true"}, {"frame_blend", "s", "off"}, {"ntsc_speed", "b", "true"},
 };
 const char* const kVideoKeys[] = {"internal_resolution", "window_width", "fullscreen", "aspect_ratio", "vsync",
                                   "texture_filtering", "antialiasing", "crt_filter", "scanlines",
@@ -520,6 +520,7 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     feature("hercules.skip-intro", "skip-intro", c.store.b("skip_intro"));
     feature("hercules.skip-intro", "skip-memcard", c.store.b("skip_memcard"));
     feature("hercules.skip-intro", "skip-fmv", c.store.b("auto_skip_fmv"));   // the runtime leaves it to a mod
+    feature("hercules.ntsc-speed", "ntsc-speed", c.store.b("ntsc_speed"));    // 30 game steps/s like the US release
     feature("hercules.skip-intro", "direct-start", new_game);
     t += "\n[feature.values]\nlevel = " + toml_str(level == "off" || level == "0" ? "1" : level) + "\n";
     // Faster emulated CD (4x: a level's ~2 MB in ~2 s instead of ~8 s) breaks
@@ -1011,7 +1012,7 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
     for (const auto& l : kLangs) langs.push_back({l.code, std::string("=") + l.name});
     return {
         {"general", {{"language", langs}, {"skip_intro", {{"false", "show"}, {"true", "skip"}}},
-                     {"updates", kOnOff}}},
+                     {"ntsc_speed", {{"false", "=PAL"}, {"true", "=NTSC"}}}, {"updates", kOnOff}}},
         {"video", {{"internal_resolution", {{"native", "native"}, {"720p", "=720P"}, {"1080p", "=1080P"},
                                             {"1440p", "=1440P"}, {"4k", "=4K"}}},
                    {"aspect_ratio", {{"4:3", "ratio43"}, {"16:9", "ratio169"}}},

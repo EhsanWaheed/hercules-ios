@@ -12,7 +12,7 @@ Downloads, what you need and build steps are in the
 |--------|------|
 | `game.toml`, `game_options.toml` | the game's configuration for the framework (German release) |
 | `versions/<id>/` | the other four PAL releases: their `game.toml`, the addresses the mods use (`hercules_addrs.h`) and a build entry, written by the decomp's `tools/port_version.py` |
-| `mods/src`, `mods/preloaded` | the game's mods: HD sprites, widescreen, level select, skip intro / direct start |
+| `mods/src`, `mods/preloaded` | the game's mods: HD sprites, widescreen, level select, skip intro / direct start, NTSC speed |
 | `launcher_native/` | the launcher compiled into the game (menus, options, HD build, updates, in-game menu) |
 | `launcher/` | the older Python launcher for source builds on Linux |
 | `hd/hd_auto.py` | fetches the HD pack for the player's disc (or makes it from the disc when there is none) |

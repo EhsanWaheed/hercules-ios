@@ -44,7 +44,7 @@ mod_function_entry_funcs = ["0x8004023C", "0x8003F64C", "0x8005464C",
                             "0x80068910", "0x800687E8", "0x800753E0"]
 mod_instruction_sites = ["0x8003FD7C", "0x8003F18C", "0x8005418C", "0x8004A050", "0x80046E04",
                          "0x8003D3B0", "0x8003D420", "0x8003D4AC", "0x8003D5F4",
-                         "0x8003C27C", "0x8003C2EC", "0x8003C378", "0x8003C4C0"]
+                         "0x8003C27C", "0x8003C2EC", "0x8003C378", "0x8003C4C0", "0x800211E8"]
 
 [runtime]
 window_title = "Hercules Recompiled"

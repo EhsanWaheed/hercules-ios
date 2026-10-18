@@ -41,7 +41,7 @@ strict = true
 # backdrop column loop in func_8003D348 (ENGINE1) / func_8003C214 (ENGINE3),
 # panorama sky builders in OV2 / OV8 / OV9.
 mod_function_entry_funcs = ["0x80040240", "0x8003F650", "0x8005464C", "0x800688F0", "0x800687C8", "0x800753C0"]
-mod_instruction_sites = ["0x8003FD80", "0x8003F190", "0x8005418C", "0x8004A054", "0x80046E08", "0x8003D3B4", "0x8003D424", "0x8003D4B0", "0x8003D5F8", "0x8003C280", "0x8003C2F0", "0x8003C37C", "0x8003C4C4"]
+mod_instruction_sites = ["0x8003FD80", "0x8003F190", "0x8005418C", "0x8004A054", "0x80046E08", "0x8003D3B4", "0x8003D424", "0x8003D4B0", "0x8003D5F8", "0x8003C280", "0x8003C2F0", "0x8003C37C", "0x8003C4C4", "0x800211E8"]
 
 [runtime]
 window_title = "Hercules Recompiled"

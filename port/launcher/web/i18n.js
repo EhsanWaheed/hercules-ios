@@ -52,7 +52,7 @@ const STR = {
       texture_filtering: "TEXTUREN", antialiasing: "GLÄTTEN", perspective_texturing: "PERSPEKTIVE",
       geometry_correction: "GEOMETRIE", crt_sim: "RÖHRENBILD", crt_mask: "MASKE", crt_bloom: "LEUCHTEN",
       scanlines: "ZEILEN", scanline_strength: "ZEILENSTÄRKE", crt_filter: "FARBEN", frequency: "FREQUENZ",
-      spu_hq: "TONQUALITÄT", auto_skip_fmv: "VIDEOS", rewind: "ZURÜCKSPULEN", skip_intro: "INTRO",
+      spu_hq: "TONQUALITÄT", auto_skip_fmv: "VIDEOS", ntsc_speed: "TEMPO", rewind: "ZURÜCKSPULEN", skip_intro: "INTRO",
     },
     val: {
       native: "ORIGINAL", ratio43: "4 ZU 3", ratio169: "16 ZU 9", window: "FENSTER", full: "VOLLBILD",
@@ -101,7 +101,7 @@ const STR = {
       texture_filtering: "TEXTURES", antialiasing: "SMOOTHING", perspective_texturing: "PERSPECTIVE",
       geometry_correction: "GEOMETRY", crt_sim: "CRT PICTURE", crt_mask: "MASK", crt_bloom: "GLOW",
       scanlines: "SCANLINES", scanline_strength: "LINE STRENGTH", crt_filter: "COLOURS", frequency: "FREQUENCY",
-      spu_hq: "SOUND QUALITY", auto_skip_fmv: "VIDEOS", rewind: "REWIND", skip_intro: "INTRO",
+      spu_hq: "SOUND QUALITY", auto_skip_fmv: "VIDEOS", ntsc_speed: "GAME SPEED", rewind: "REWIND", skip_intro: "INTRO",
     },
     val: {
       native: "ORIGINAL", ratio43: "4 BY 3", ratio169: "16 BY 9", window: "WINDOW", full: "FULLSCREEN",
@@ -150,7 +150,7 @@ const STR = {
       texture_filtering: "TEXTURES", antialiasing: "LISSAGE", perspective_texturing: "PERSPECTIVE",
       geometry_correction: "GÉOMÉTRIE", crt_sim: "IMAGE CATHODIQUE", crt_mask: "MASQUE", crt_bloom: "LUEUR",
       scanlines: "LIGNES", scanline_strength: "FORCE DES LIGNES", crt_filter: "COULEURS", frequency: "FRÉQUENCE",
-      spu_hq: "QUALITÉ DU SON", auto_skip_fmv: "VIDÉOS", rewind: "RETOUR ARRIÈRE", skip_intro: "INTRO",
+      spu_hq: "QUALITÉ DU SON", auto_skip_fmv: "VIDÉOS", ntsc_speed: "VITESSE", rewind: "RETOUR ARRIÈRE", skip_intro: "INTRO",
     },
     val: {
       native: "ORIGINAL", ratio43: "4 SUR 3", ratio169: "16 SUR 9", window: "FENÊTRE", full: "PLEIN ÉCRAN",
@@ -199,7 +199,7 @@ const STR = {
       texture_filtering: "TEXTURAS", antialiasing: "SUAVIZADO", perspective_texturing: "PERSPECTIVA",
       geometry_correction: "GEOMETRÍA", crt_sim: "IMAGEN DE TUBO", crt_mask: "MÁSCARA", crt_bloom: "BRILLO",
       scanlines: "LÍNEAS", scanline_strength: "FUERZA DE LÍNEAS", crt_filter: "COLORES", frequency: "FRECUENCIA",
-      spu_hq: "CALIDAD DE SONIDO", auto_skip_fmv: "VÍDEOS", rewind: "REBOBINAR", skip_intro: "INTRO",
+      spu_hq: "CALIDAD DE SONIDO", auto_skip_fmv: "VÍDEOS", ntsc_speed: "VELOCIDAD", rewind: "REBOBINAR", skip_intro: "INTRO",
     },
     val: {
       native: "ORIGINAL", ratio43: "4 A 3", ratio169: "16 A 9", window: "VENTANA", full: "COMPLETA",
@@ -248,7 +248,7 @@ const STR = {
       texture_filtering: "TEXTURE", antialiasing: "SMUSSATURA", perspective_texturing: "PROSPETTIVA",
       geometry_correction: "GEOMETRIA", crt_sim: "IMMAGINE CRT", crt_mask: "MASCHERA", crt_bloom: "BAGLIORE",
       scanlines: "SCANLINE", scanline_strength: "INTENSITÀ LINEE", crt_filter: "COLORI", frequency: "FREQUENZA",
-      spu_hq: "QUALITÀ AUDIO", auto_skip_fmv: "VIDEO", rewind: "RIAVVOLGI", skip_intro: "INTRO",
+      spu_hq: "QUALITÀ AUDIO", auto_skip_fmv: "VIDEO", ntsc_speed: "VELOCITÀ", rewind: "RIAVVOLGI", skip_intro: "INTRO",
     },
     val: {
       native: "ORIGINALE", ratio43: "4 A 3", ratio169: "16 A 9", window: "FINESTRA", full: "SCHERMO INTERO",
