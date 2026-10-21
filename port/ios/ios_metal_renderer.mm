@@ -16,11 +16,13 @@
 #include "ios_metal_renderer.h"
 
 #include "ios_metal_shaders.h"
+#include "ios_metal_trace.h"
 
 extern "C" {
 #include "gpu_render.h"
 #include "gpu_sw_renderer.h"
 #include "gpu_uv.h"
+#include "gpu_sw_edges.h"
 uint16_t *gpu_get_vram_ptr(void);
 int psx_ws_prim_in_backdrop(void);
 extern int g_ws_bd_stretch_on, g_ws_bd_stretch_pct;
@@ -28,6 +30,7 @@ extern int g_ws_bd_stretch_on, g_ws_bd_stretch_pct;
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include <algorithm>
 #include <atomic>
@@ -40,7 +43,9 @@ namespace {
 
 constexpr int kVramW = 1024, kVramH = 512;
 constexpr int kMaxScale = 4;      // main.cpp sizes its staging for SW_MAX_INTERNAL_SCALE
-constexpr int kSnapshots = 24;    // native VRAM copies in the ring (1 MiB each)
+constexpr int kTiles = 128;       // native VRAM as 16 x 8 tiles of 64x64
+constexpr int kPages = 4096;      // tile copies in the pool (8 KiB each: 32 MiB)
+constexpr int kTables = 8192;     // snapshots: the page of each tile (512 bytes each)
 constexpr int kWideSurfaces = 4;  // as the software renderer
 constexpr int kInFlight = 3;
 
@@ -57,8 +62,9 @@ struct Prim {
     int32_t tw_mask_x, tw_mask_y, tw_off_x, tw_off_y;
     int32_t mod_r, mod_g, mod_b, pad0;
     int32_t lim[4];
+    int64_t fp0, fp1, long_step, short_step0, short_step1;  // the edge walk, fixed per triangle
 };
-static_assert(sizeof(Prim) == 52 * 4, "Prim layout: 52 four-byte fields, as the shader's");
+static_assert(sizeof(Prim) == 52 * 4 + 5 * 8, "Prim layout: as the shader's");
 
 enum { K_FLAT_TRI, K_GOURAUD_TRI, K_TEX_TRI, K_SHADED_TEX_TRI, K_FLAT_RECT, K_TEX_RECT, K_TEX_RECT_SCALED, K_BLOCK,
        K_FILL, K_UPLOAD };
@@ -76,10 +82,27 @@ struct State {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     id<MTLRenderPipelineState> prim_pipe, decode_pipe;
-    id<MTLBuffer> snaps;                 // kSnapshots x 1 MiB
-    uint64_t snap_used[kSnapshots] = {};  // commit serial that last used the slot
-    int snap_cur = -1, snap_next = 0;
-    uint64_t dirty[2] = {~0ull, ~0ull};  // 64x64 tiles drawn since the current snapshot (16 x 8)
+    // Snapshots of native VRAM: tile copies in a pool of pages, and per snapshot a table of the page each tile is
+    // in. A primitive's snapshot copies only the tiles it samples that changed since their last copy.
+    id<MTLBuffer> pages, tables;
+    uint64_t page_used[kPages] = {};  // the latest recording that may read the page
+    int16_t page_tile[kPages];        // the tile whose copy the page holds (-1 none)
+    uint64_t table_used[kTables] = {};
+    uint32_t cur_table[kTiles] = {};  // the newest snapshot's pages
+    bool fresh[kTiles] = {};          // the tile's page matches native VRAM
+    bool table_changed = true;
+    int page_next = 0, table_next = 0, snap_cur = -1;
+    // The hi-res mirror is skipped while a wide surface takes the framebuffer's primitives (gameplay in
+    // widescreen: only the wide surface is shown), and rebuilt from native VRAM if it is shown anyway.
+    bool hires_stale = false;
+    // buffers for recorded primitives, reused once the GPU is past them
+    struct Pooled { id<MTLBuffer> buf; uint64_t serial; };
+    std::vector<Pooled> pool;
+    // stats, logged every 5 s
+    uint64_t st_frames = 0, st_prims_hires = 0, st_prims_wide = 0, st_snaps = 0, st_tiles = 0, st_stalls = 0,
+             st_commits = 0;
+    double st_cpu_snap = 0, st_cpu_commit = 0, st_window = 0;
+    std::atomic<uint64_t> st_gpu_us{0};
     uint64_t serial = 1;                 // the commit being recorded
     std::atomic<uint64_t> completed{0};
     dispatch_semaphore_t inflight;
@@ -141,9 +164,11 @@ bool ensure_ready() {
     d.fragmentFunction = [lib newFunctionWithName:@"decode_fs"];
     d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     s.decode_pipe = [s.device newRenderPipelineStateWithDescriptor:d error:&err];
-    s.snaps = [s.device newBufferWithLength:(NSUInteger)kSnapshots * kVramW * kVramH * 2
-                                    options:MTLResourceStorageModeShared];
-    if (!s.prim_pipe || !s.decode_pipe || !s.snaps) {
+    s.pages = [s.device newBufferWithLength:(NSUInteger)kPages * 64 * 64 * 2 options:MTLResourceStorageModeShared];
+    s.tables = [s.device newBufferWithLength:(NSUInteger)kTables * kTiles * 4 options:MTLResourceStorageModeShared];
+    for (int i = 0; i < kPages; ++i)
+        s.page_tile[i] = -1;
+    if (!s.prim_pipe || !s.decode_pipe || !s.pages || !s.tables) {
         fprintf(stderr, "[metal] setup failed: %s\n", err.localizedDescription.UTF8String);
         s.failed = true;
         return false;
@@ -167,62 +192,96 @@ id<MTLTexture> make_target(int w, int h) {
 
 // ---- native VRAM snapshots -------------------------------------------------------------------------------
 
-void mark_dirty(int x, int y, int w, int h) {
-    State &s = st();
+double now_s() { return CACurrentMediaTime(); }
+
+// Calls f(tile) for each 64x64 tile a VRAM rect touches (a wrapped rect: generously, the whole width / height).
+template <typename F> void for_tiles(int x, int y, int w, int h, F f) {
     if (w <= 0 || h <= 0)
         return;
-    // wrapped rects: mark generously (whole width / height)
     int x0 = x & (kVramW - 1), y0 = y & (kVramH - 1);
     int x1 = x0 + w - 1, y1 = y0 + h - 1;
     if (x1 >= kVramW) { x0 = 0; x1 = kVramW - 1; }
     if (y1 >= kVramH) { y0 = 0; y1 = kVramH - 1; }
     for (int ty = y0 >> 6; ty <= y1 >> 6; ++ty)
-        for (int tx = x0 >> 6; tx <= x1 >> 6; ++tx) {
-            const int i = ty * 16 + tx;
-            s.dirty[i >> 6] |= 1ull << (i & 63);
-        }
+        for (int tx = x0 >> 6; tx <= x1 >> 6; ++tx)
+            f(ty * 16 + tx);
 }
 
-bool tiles_dirty(int x, int y, int w, int h) {
+void mark_dirty(int x, int y, int w, int h) {
     State &s = st();
-    int x0 = x & (kVramW - 1), y0 = y & (kVramH - 1);
-    int x1 = x0 + w - 1, y1 = y0 + h - 1;
-    if (x1 >= kVramW) { x0 = 0; x1 = kVramW - 1; }
-    if (y1 >= kVramH) { y0 = 0; y1 = kVramH - 1; }
-    for (int ty = y0 >> 6; ty <= y1 >> 6; ++ty)
-        for (int tx = x0 >> 6; tx <= x1 >> 6; ++tx) {
-            const int i = ty * 16 + tx;
-            if (s.dirty[i >> 6] & (1ull << (i & 63)))
-                return true;
-        }
-    return false;
+    for_tiles(x, y, w, h, [&](int t) { s.fresh[t] = false; });
 }
 
 void commit();
 
-// The snapshot a primitive reading native VRAM over these rects should use (taking a new one if they changed).
+// Waits until no recording that may still read a slot is in flight; a slot the recording in progress may read is
+// committed first.
+void ensure_free(uint64_t used) {
+    State &s = st();
+    if (used == s.serial)
+        commit();
+    if (used > s.completed.load()) {
+        s.st_stalls++;
+        while (used > s.completed.load())
+            usleep(100);
+    }
+}
+
+// The newest snapshot's pages may be read by the recording in progress.
+void mark_table_used(int slot) {
+    State &s = st();
+    if (s.table_used[slot] == s.serial)
+        return;
+    s.table_used[slot] = s.serial;
+    const uint32_t *t = (const uint32_t *)s.tables.contents + (size_t)slot * kTiles;
+    for (int i = 0; i < kTiles; ++i)
+        s.page_used[t[i]] = s.serial;
+}
+
+void copy_tile(int tile) {
+    State &s = st();
+    const int page = s.page_next;
+    ensure_free(s.page_used[page]);
+    const int old = s.page_tile[page];
+    if (old >= 0 && s.cur_table[old] == (uint32_t)page)
+        s.fresh[old] = false;  // its copy goes: copied again when next sampled
+    uint16_t *dst = (uint16_t *)s.pages.contents + (size_t)page * 4096;
+    const uint16_t *src = s.vram + (size_t)(tile >> 4) * 64 * kVramW + (size_t)(tile & 15) * 64;
+    for (int row = 0; row < 64; ++row)
+        memcpy(dst + row * 64, src + (size_t)row * kVramW, 64 * 2);
+    s.page_tile[page] = (int16_t)tile;
+    s.cur_table[tile] = (uint32_t)page;
+    s.fresh[tile] = true;
+    s.page_next = (page + 1) % kPages;
+    s.table_changed = true;
+    s.st_tiles++;
+}
+
+// The snapshot a primitive reading native VRAM over these rects should use: the tiles it reads are brought up to
+// date (copied) first.
 int snapshot_for(const int (*rects)[4], int n) {
     State &s = st();
     if (!s.ready)
         return 0;
-    bool need = s.snap_cur < 0;
-    for (int i = 0; i < n && !need; ++i)
-        need = tiles_dirty(rects[i][0], rects[i][1], rects[i][2], rects[i][3]);
-    if (!need)
-        return s.snap_cur;
-    // the next slot, once no committed frame still reads it; a slot this very recording uses means the ring is
-    // full: commit what is recorded first
-    const int slot = s.snap_next;
-    if (s.snap_used[slot] == s.serial)
-        commit();
-    while (s.snap_used[slot] > s.completed.load())
-        usleep(200);
-    memcpy((uint8_t *)s.snaps.contents + (size_t)slot * kVramW * kVramH * 2, s.vram, (size_t)kVramW * kVramH * 2);
-    s.snap_used[slot] = s.serial;
-    s.snap_cur = slot;
-    s.snap_next = (slot + 1) % kSnapshots;
-    s.dirty[0] = s.dirty[1] = 0;
-    return slot;
+    const double t0 = now_s();
+    for (int i = 0; i < n; ++i)
+        for_tiles(rects[i][0], rects[i][1], rects[i][2], rects[i][3], [&](int t) {
+            if (!s.fresh[t])
+                copy_tile(t);
+        });
+    if (s.table_changed || s.snap_cur < 0) {
+        const int slot = s.table_next;
+        ensure_free(s.table_used[slot]);
+        memcpy((uint32_t *)s.tables.contents + (size_t)slot * kTiles, s.cur_table, sizeof s.cur_table);
+        s.table_used[slot] = 0;
+        s.snap_cur = slot;
+        s.table_next = (slot + 1) % kTables;
+        s.table_changed = false;
+        s.st_snaps++;
+    }
+    mark_table_used(s.snap_cur);
+    s.st_cpu_snap += now_s() - t0;
+    return s.snap_cur;
 }
 
 // The VRAM a textured primitive samples: its texture page (as wide as its depth reads) and its CLUT row.
@@ -295,6 +354,19 @@ void push_raw(Target &t, Prim p) {
 }
 
 bool have_hires() { return st().scale > 1 && st().hires.tex; }
+Target *wide_target();
+// The framebuffer's primitives go to the hi-res mirror unless a wide surface takes them (and the mirror is not
+// being compared against the software renderer's).
+bool record_hires() {
+    State &s = st();
+    if (!have_hires())
+        return false;
+    if (wide_target() && !s.verify) {
+        s.hires_stale = true;
+        return false;
+    }
+    return true;
+}
 // Without Metal (no framebuffer fetch: the Simulator) the software renderer does everything, its mirror included.
 bool passthrough() { return !st().ready; }
 // The software renderer keeps its own mirror and wide surfaces: without Metal, or to compare against.
@@ -356,6 +428,12 @@ void tri_into(Prim &p, Vert a, Vert b, Vert c) {
     p.bx1 = std::max({a.x, b.x, c.x}) + 2;
     p.by0 = a.y;
     p.by1 = c.y;
+    // gpu_sw_edges.h psx_triangle_edges_at_y's per-triangle part (a step whose edge has no height is never used)
+    p.fp0 = psx_edge_fp(a.x);
+    p.fp1 = psx_edge_fp(b.x);
+    p.long_step = c.y != a.y ? psx_edge_step(c.x - a.x, c.y - a.y) : 0;
+    p.short_step0 = b.y != a.y ? psx_edge_step(b.x - a.x, b.y - a.y) : 0;
+    p.short_step1 = c.y != b.y ? psx_edge_step(c.x - b.x, c.y - b.y) : 0;
 }
 
 // Records a triangle for the hi-res mirror and the active wide surface.
@@ -365,7 +443,7 @@ void record_tri(int kind, int flags, const int xs[3], const int ys[3], const int
     const int k = s.scale;
     if (s.perspective) proto.flags |= F_PERSPECTIVE;
     (void)kind;
-    if (have_hires()) {
+    if (record_hires()) {
         Prim p = proto;
         clip_hires(p);
         Vert v[3];
@@ -453,8 +531,7 @@ void m_init(uint16_t *vram) {
     s.tw_mask_x = s.tw_mask_y = s.tw_off_x = s.tw_off_y = 0;
     s.mod_r = s.mod_g = s.mod_b = 16;
     s.raw = 0;
-    s.dirty[0] = s.dirty[1] = ~0ull;
-    s.snap_cur = -1;
+    for (bool &f : s.fresh) f = false;
     record_upload(0, 0, kVramW, kVramH);
 }
 
@@ -478,7 +555,7 @@ void m_set_scale(int scale) {
         s.hires.w = kVramW * scale;
         s.hires.h = kVramH * scale;
         s.hires.tex = make_target(s.hires.w, s.hires.h);
-        s.dirty[0] = s.dirty[1] = ~0ull;
+        for (bool &f : s.fresh) f = false;
         record_upload(0, 0, kVramW, kVramH);  // the mirror starts as native VRAM, as the software renderer's
     }
     fprintf(stderr, "[metal] internal scale %d\n", s.scale);
@@ -630,7 +707,7 @@ void m_flat_rect(int x, int y, int w, int h, uint16_t color) {
     const int k = s.scale;
     Prim proto = base_prim(K_FLAT_RECT, flags_now(false));
     proto.color = color;
-    if (have_hires()) {
+    if (record_hires()) {
         Prim p = proto;
         clip_hires(p);
         rect_into(p, x * k, y * k, w * k, h * k);
@@ -665,7 +742,7 @@ void m_tex_rect(int x, int y, int w, int h, int u, int v, uint16_t clut_x, uint1
     proto.texpage = texpage; proto.clut_x = clut_x; proto.clut_y = clut_y;
     proto.u[0] = u; proto.v[0] = v;
     if (proto.flags & F_FILTER) psx_uv_rect_limits(u, v, u + w, v + h, proto.lim);
-    if (have_hires()) {
+    if (record_hires()) {
         Prim p = proto;
         clip_hires(p);
         rect_into(p, x * k, y * k, w * k, h * k);
@@ -700,7 +777,7 @@ void m_tex_rect_scaled(int x, int y, int w, int h, int u0, int v0, int u1, int v
     proto.texpage = texpage; proto.clut_x = clut_x; proto.clut_y = clut_y;
     proto.u[0] = u0; proto.v[0] = v0; proto.u[1] = u1; proto.v[1] = v1;
     if (proto.flags & F_FILTER) psx_uv_rect_limits(u0, v0, u1, v1, proto.lim);
-    if (have_hires()) {
+    if (record_hires()) {
         Prim p = proto;
         clip_hires(p);
         rect_into(p, x * k, y * k, w * k, h * k);
@@ -723,7 +800,7 @@ void line_block(int nx, int ny, uint16_t color, int flags) {
     const int k = s.scale;
     Prim proto = base_prim(K_BLOCK, flags);
     proto.color = color;
-    if (have_hires()) {
+    if (record_hires()) {
         Prim p = proto;
         clip_hires(p);
         rect_into(p, nx * k, ny * k, k, k);
@@ -798,13 +875,43 @@ int m_render_display(uint32_t *out, int pitch, int dx, int dy, int dw, int dh) {
 // The hi-res picture: committed, and handed to the presenter as a region of the mirror (no readback).
 void verify_frame(id<MTLTexture> tex, int x, int y, int w, int h, const uint32_t *cpu, int pitch);
 
+// Every 5 s: what a frame cost, in the log (Documents/Logs/hercules.log on the device).
+void stats_tick(bool force = false) {
+    State &s = st();
+    if (!force)
+        s.st_frames++;
+    const double now = now_s();
+    if (s.st_window == 0)
+        s.st_window = now;
+    if (now - s.st_window < 5.0 && !(force && s.st_frames))
+        return;
+    const double n = (double)std::max<uint64_t>(s.st_frames, 1);
+    const char *thermal[] = {"nominal", "fair", "serious", "critical"};
+    const NSInteger th = NSProcessInfo.processInfo.thermalState;
+    fprintf(stderr,
+            "[metal] %.1f fps | per frame: prims %.0f hi-res + %.0f wide, snapshots %.1f, tiles %.1f, commits %.2f, "
+            "cpu %.2f ms snapshots + %.2f ms commit, gpu %.2f ms | stalls %llu | scale %d | thermal %s\n",
+            n / (now - s.st_window), s.st_prims_hires / n, s.st_prims_wide / n, s.st_snaps / n, s.st_tiles / n,
+            s.st_commits / n, s.st_cpu_snap * 1000 / n, s.st_cpu_commit * 1000 / n,
+            s.st_gpu_us.exchange(0) / 1000.0 / n, (unsigned long long)s.st_stalls, s.scale,
+            thermal[std::clamp<NSInteger>(th, 0, 3)]);
+    s.st_frames = s.st_prims_hires = s.st_prims_wide = s.st_snaps = s.st_tiles = s.st_stalls = s.st_commits = 0;
+    s.st_cpu_snap = s.st_cpu_commit = 0;
+    s.st_window = now;
+}
+
 int m_render_display_hires(uint32_t *out, int pitch, int dx, int dy, int dw, int dh) {
     State &s = st();
     if (passthrough())
         return sw_render_display_hires(out, pitch, dx, dy, dw, dh);
     if (!have_hires())
         return sw_render_display(out, pitch, dx, dy, dw, dh);
+    if (s.hires_stale) {  // shown after widescreen play skipped it: the picture from native VRAM
+        record_upload(dx, dy, dw, dh);
+        s.hires_stale = false;
+    }
     commit();
+    stats_tick();
     const int k = s.scale;
     s.frame.texture = (__bridge void *)s.hires.tex;
     s.frame.x = (dx & (kVramW - 1)) * k;
@@ -909,6 +1016,7 @@ int m_render_wide_display(uint32_t *out, int pitch, int base_x, int disp_y, int 
     const int i = wide_index(base_x, false);
     if (i < 0 || s.wide_w <= 0) return 0;
     commit();
+    stats_tick();
     const int k = s.scale;
     Target &t = s.wide[i];
     s.frame.texture = (__bridge void *)t.tex;
@@ -978,9 +1086,22 @@ void encode_target(id<MTLCommandBuffer> cb, Target &t) {
     State &s = st();
     if (t.prims.empty() || !t.tex)
         return;
-    id<MTLBuffer> prims = [s.device newBufferWithBytes:t.prims.data()
-                                                length:t.prims.size() * sizeof(Prim)
-                                               options:MTLResourceStorageModeShared];
+    const size_t bytes = t.prims.size() * sizeof(Prim);
+    id<MTLBuffer> prims = nil;
+    for (auto &b : s.pool)
+        if (b.serial <= s.completed.load() && b.buf.length >= bytes) {
+            prims = b.buf;
+            b.serial = s.serial;
+            break;
+        }
+    if (!prims) {
+        size_t size = 256 * 1024;
+        while (size < bytes) size *= 2;
+        prims = [s.device newBufferWithLength:size options:MTLResourceStorageModeShared];
+        s.pool.push_back({prims, s.serial});
+    }
+    memcpy(prims.contents, t.prims.data(), bytes);
+    (&t == &s.hires ? s.st_prims_hires : s.st_prims_wide) += t.prims.size();
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = t.tex;
     pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
@@ -991,7 +1112,8 @@ void encode_target(id<MTLCommandBuffer> cb, Target &t) {
     [enc setVertexBuffer:prims offset:0 atIndex:0];
     [enc setVertexBytes:size length:sizeof size atIndex:1];
     [enc setFragmentBuffer:prims offset:0 atIndex:0];
-    [enc setFragmentBuffer:s.snaps offset:0 atIndex:1];
+    [enc setFragmentBuffer:s.pages offset:0 atIndex:1];
+    [enc setFragmentBuffer:s.tables offset:0 atIndex:2];
     [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:t.prims.size()];
     [enc endEncoding];
     t.prims.clear();
@@ -1005,19 +1127,23 @@ void commit() {
     for (auto &w : s.wide) any = any || !w.prims.empty();
     if (!any)
         return;
+    const double t0 = now_s();
     dispatch_semaphore_wait(s.inflight, DISPATCH_TIME_FOREVER);
     id<MTLCommandBuffer> cb = [s.queue commandBuffer];
     encode_target(cb, s.hires);
     for (auto &w : s.wide) encode_target(cb, w);
     const uint64_t serial = s.serial++;
     dispatch_semaphore_t sem = s.inflight;
-    [cb addCompletedHandler:^(id<MTLCommandBuffer>) {
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> done_cb) {
+      st().st_gpu_us += (uint64_t)std::max(0.0, (done_cb.GPUEndTime - done_cb.GPUStartTime) * 1e6);
       uint64_t done = st().completed.load();
       while (done < serial && !st().completed.compare_exchange_weak(done, serial)) {
       }
       dispatch_semaphore_signal(sem);
     }];
     [cb commit];
+    s.st_commits++;
+    s.st_cpu_commit += now_s() - t0;
 }
 
 const GpuRenderBackend kMetal = {
@@ -1063,11 +1189,130 @@ const GpuRenderBackend kMetal = {
     .wide_dump_full = m_wide_dump_full,
 };
 
+// ---- trace: every call into the backend, for replaying through the Mac test harness (tools/ios_metal_harness) ----
+// HERC_TRACE=<file>. Record: int32 op, int32 argc, argc x int32, uint32 payload bytes, payload. The first record
+// is native VRAM as it was; every primitive carries psx_ws_prim_in_backdrop() as its last argument.
+
+FILE *g_trace;
+void trace(int op, std::initializer_list<int32_t> args, const void *data = nullptr, uint32_t len = 0) {
+    static bool started = false;
+    if (!started) {
+        started = true;
+        const int32_t hdr[2] = {HT_VRAM, 0};
+        const uint32_t n = kVramW * kVramH * 2;
+        fwrite(hdr, 4, 2, g_trace);
+        fwrite(&n, 4, 1, g_trace);
+        fwrite(gpu_get_vram_ptr(), 1, n, g_trace);
+    }
+    const int32_t hdr[2] = {op, (int32_t)args.size()};
+    fwrite(hdr, 4, 2, g_trace);
+    fwrite(args.begin(), 4, args.size(), g_trace);
+    fwrite(&len, 4, 1, g_trace);
+    if (len)
+        fwrite(data, 1, len, g_trace);
+}
+int32_t fbits(float f) { int32_t i; memcpy(&i, &f, 4); return i; }
+int32_t bd() { return psx_ws_prim_in_backdrop(); }
+
+void t_init(uint16_t *v) { m_init(v); }
+void t_set_scale(int k) { trace(HT_SET_SCALE, {k}); m_set_scale(k); }
+void t_set_filter(int b) { trace(HT_SET_FILTER, {b}); m_set_texture_filter(b); }
+void t_set_semi(int e, int m) { trace(HT_SET_SEMI, {e, m}); m_set_semi(e, m); }
+void t_set_mask(int a, int b) { trace(HT_SET_MASK, {a, b}); m_set_mask(a, b); }
+void t_set_tw(uint32_t r) { trace(HT_SET_TW, {(int32_t)r}); m_set_tw(r); }
+void t_set_mod(int r, int g, int b, int raw) { trace(HT_SET_MOD, {r, g, b, raw}); m_set_mod(r, g, b, raw); }
+void t_set_precise(int e, int32_t a, int32_t b, int32_t c, int32_t d, int32_t f, int32_t g) {
+    trace(HT_SET_PRECISE, {e, a, b, c, d, f, g}); m_set_precise(e, a, b, c, d, f, g);
+}
+void t_set_persp(int e, float a, float b, float c) {
+    trace(HT_SET_PERSP, {e, fbits(a), fbits(b), fbits(c)}); m_set_perspective(e, a, b, c);
+}
+void t_fill(int x, int y, int w, int h, uint16_t c) { trace(HT_FILL, {x, y, w, h, c}); m_fill_rect(x, y, w, h, c); }
+void t_copy(int a, int b, int c, int d, int w, int h) { trace(HT_COPY, {a, b, c, d, w, h}); m_copy_rect(a, b, c, d, w, h); }
+void t_flat_tri(int a, int b, int c, int d, int e, int f, uint16_t col) {
+    trace(HT_FLAT_TRI, {a, b, c, d, e, f, col, bd()}); m_flat_tri(a, b, c, d, e, f, col);
+}
+void t_gouraud(int a, int b, uint16_t c0, int c, int d, uint16_t c1, int e, int f, uint16_t c2) {
+    trace(HT_GOURAUD, {a, b, c0, c, d, c1, e, f, c2, bd()}); m_gouraud_tri(a, b, c0, c, d, c1, e, f, c2);
+}
+void t_tex_tri(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j, int k, int l, uint16_t cx,
+               uint16_t cy, uint16_t tp) {
+    trace(HT_TEX_TRI, {a, b, c, d, e, f, g, h, i, j, k, l, cx, cy, tp, bd()});
+    m_tex_tri(a, b, c, d, e, f, g, h, i, j, k, l, cx, cy, tp);
+}
+void t_shaded_tex_tri(int a, int b, int c, int d, uint32_t c0, int e, int f, int g, int h, uint32_t c1, int i, int j,
+                      int k, int l, uint32_t c2, uint16_t cx, uint16_t cy, uint16_t tp, int raw) {
+    trace(HT_SHADED_TEX_TRI, {a, b, c, d, (int32_t)c0, e, f, g, h, (int32_t)c1, i, j, k, l, (int32_t)c2, cx, cy, tp,
+                              raw, bd()});
+    m_shaded_tex_tri(a, b, c, d, c0, e, f, g, h, c1, i, j, k, l, c2, cx, cy, tp, raw);
+}
+void t_flat_rect(int x, int y, int w, int h, uint16_t c) { trace(HT_FLAT_RECT, {x, y, w, h, c, bd()}); m_flat_rect(x, y, w, h, c); }
+void t_tex_rect(int x, int y, int w, int h, int u, int v, uint16_t cx, uint16_t cy, uint16_t tp) {
+    trace(HT_TEX_RECT, {x, y, w, h, u, v, cx, cy, tp, bd()}); m_tex_rect(x, y, w, h, u, v, cx, cy, tp);
+}
+void t_tex_rect_scaled(int x, int y, int w, int h, int a, int b, int c, int d, uint16_t cx, uint16_t cy,
+                       uint16_t tp) {
+    trace(HT_TEX_RECT_SCALED, {x, y, w, h, a, b, c, d, cx, cy, tp, bd()});
+    m_tex_rect_scaled(x, y, w, h, a, b, c, d, cx, cy, tp);
+}
+void t_line(int a, int b, int c, int d, uint16_t col) { trace(HT_LINE, {a, b, c, d, col}); m_line(a, b, c, d, col); }
+void t_shaded_line(int a, int b, uint16_t c0, int c, int d, uint16_t c1) {
+    trace(HT_SHADED_LINE, {a, b, c0, c, d, c1}); m_shaded_line(a, b, c0, c, d, c1);
+}
+void t_vram_write(int x, int y, uint16_t p) { trace(HT_VRAM_WRITE, {x, y, p}); m_vram_write(x, y, p); }
+void t_transfer_in(int x, int y, int w, int h, const uint16_t *d) {
+    trace(HT_TRANSFER_IN, {x, y, w, h}, d, d && w > 0 && h > 0 ? (uint32_t)(w * h * 2) : 0);
+    m_transfer_in(x, y, w, h, d);
+}
+void t_draw_area(int a, int b, int c, int d) { trace(HT_DRAW_AREA, {a, b, c, d}); m_set_draw_area(a, b, c, d); }
+void t_draw_offset(int x, int y) { trace(HT_DRAW_OFFSET, {x, y}); m_set_draw_offset(x, y); }
+int t_display_hires(uint32_t *o, int p, int a, int b, int c, int d) {
+    trace(HT_DISPLAY_HIRES, {a, b, c, d}); return m_render_display_hires(o, p, a, b, c, d);
+}
+void t_wide_configure(int w, int o) { trace(HT_WIDE_CONFIGURE, {w, o}); m_wide_configure(w, o); }
+void t_wide_view(int e, int s, int l, int r) { trace(HT_WIDE_VIEW, {e, s, l, r}); m_wide_set_view(e, s, l, r); }
+void t_wide_target(int b) { trace(HT_WIDE_TARGET, {b}); m_wide_set_target(b); }
+void t_wide_disable() { trace(HT_WIDE_DISABLE, {}); m_wide_disable_target(); }
+void t_wide_clear(int b, int y, int h, uint16_t c) { trace(HT_WIDE_CLEAR, {b, y, h, c}); m_wide_clear(b, y, h, c); }
+void t_wide_margins(int b, int y, int h, uint16_t c, int s) {
+    trace(HT_WIDE_MARGINS, {b, y, h, c, s}); m_wide_clear_margins(b, y, h, c, s);
+}
+int t_display_wide(uint32_t *o, int p, int b, int y, int h) {
+    trace(HT_DISPLAY_WIDE, {b, y, h}); return m_render_wide_display(o, p, b, y, h);
+}
+
+const GpuRenderBackend kTrace = [] {
+    GpuRenderBackend b = kMetal;
+    b.name = "metal (tracing)";
+    b.init = t_init; b.set_scale = t_set_scale; b.set_texture_filter = t_set_filter;
+    b.set_semi_transparency = t_set_semi; b.set_mask_bits = t_set_mask; b.set_texture_window = t_set_tw;
+    b.set_color_modulation = t_set_mod; b.set_precise_triangle = t_set_precise;
+    b.set_perspective_triangle = t_set_persp; b.fill_rect = t_fill; b.copy_rect = t_copy;
+    b.draw_flat_triangle = t_flat_tri; b.draw_gouraud_triangle = t_gouraud; b.draw_textured_triangle = t_tex_tri;
+    b.draw_shaded_textured_triangle = t_shaded_tex_tri; b.draw_flat_rect = t_flat_rect;
+    b.draw_textured_rect = t_tex_rect; b.draw_textured_rect_scaled = t_tex_rect_scaled; b.draw_line = t_line;
+    b.draw_shaded_line = t_shaded_line; b.render_display_hires = t_display_hires; b.vram_write = t_vram_write;
+    b.vram_transfer_in = t_transfer_in; b.set_draw_area = t_draw_area; b.set_draw_offset = t_draw_offset;
+    b.wide_configure = t_wide_configure; b.wide_set_view = t_wide_view; b.wide_set_target = t_wide_target;
+    b.wide_disable_target = t_wide_disable; b.wide_clear = t_wide_clear; b.wide_clear_margins = t_wide_margins;
+    b.render_wide_display = t_display_wide;
+    return b;
+}();
+
 struct Register {
     Register() {
         NSString *pick = [NSUserDefaults.standardUserDefaults stringForKey:@"ios.renderer"];
-        if (![pick isEqualToString:@"software"])
-            gr_register_host_software_backend(&kMetal);
+        if ([pick isEqualToString:@"software"])
+            return;
+        if (const char *path = getenv("HERC_TRACE")) {
+            g_trace = fopen(path, "wb");
+            if (g_trace) {
+                setvbuf(g_trace, nullptr, _IOFBF, 1 << 20);
+                gr_register_host_software_backend(&kTrace);
+                return;
+            }
+        }
+        gr_register_host_software_backend(&kMetal);
     }
 } g_register;
 
@@ -1110,3 +1355,14 @@ void herc_metal_decode(id<MTLCommandBuffer> cb, const HercMetalFrame *frame, id<
 }
 
 int herc_metal_active(void) { return st().ready && st().scale > 1 ? 1 : 0; }
+
+const GpuRenderBackend *herc_metal_backend(void) { return &kMetal; }
+
+void herc_metal_finish(void) {
+    if (g_trace) fflush(g_trace);
+    commit();
+    id<MTLCommandBuffer> cb = [st().queue commandBuffer];
+    [cb commit];
+    [cb waitUntilCompleted];
+    stats_tick(true);
+}

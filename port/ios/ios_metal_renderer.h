@@ -18,6 +18,10 @@ typedef struct HercMetalFrame {
 // The frame the last display readout handed over, once.
 int herc_metal_take_frame(HercMetalFrame *frame);
 int herc_metal_active(void);
+// The backend itself (the Mac test harness drives it), and everything recorded drawn and finished.
+struct GpuRenderBackend;
+const struct GpuRenderBackend *herc_metal_backend(void);
+void herc_metal_finish(void);
 
 #ifdef __OBJC__
 id<MTLDevice> herc_metal_device(void);

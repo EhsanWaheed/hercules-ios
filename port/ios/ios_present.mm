@@ -71,6 +71,8 @@ struct Presenter {
     id<MTLFXSpatialScaler> fx;
 #endif
     bool fx_supported = false;
+    double last_exit = 0, game_s = 0, present_s = 0, wait_s = 0;  // timing, logged every 5 s
+    int log_frames = 0;
     double fps = 0;  // frames presented per second, over the last second
     bool failed = false;
 };
@@ -196,21 +198,30 @@ int present(const uint32_t *argb, int w, int h, int stride, float aspect, int de
     if (w <= 0 || h <= 0 || !init())
         return 0;
     herc_overlay_frame();  // the settings panel: installed on the first frame, and holds the game while open
+    const double entered = CACurrentMediaTime();
     {
-        // The presented rate, in the system log every 5 s (log stream --predicate 'eventMessage CONTAINS "[present]"').
-        static double since = CACurrentMediaTime(), logged = since;
+        // The presented rate, and where a frame's time goes, in the log every 5 s: "game" is the CPU between two
+        // presents (the recompiled game and the native picture), "present" this presenter, "wait" its drawable wait.
+        static double since = entered, logged = entered;
         static int frames = 0;
         ++frames;
-        const double now = CACurrentMediaTime();
-        if (now - since >= 1.0) {
-            g.fps = frames / (now - since);
-            since = now;
+        if (g.last_exit > 0) g.game_s += entered - g.last_exit;
+        if (entered - since >= 1.0) {
+            g.fps = frames / (entered - since);
+            since = entered;
             frames = 0;
-            if (now - logged >= 5.0) {
-                NSLog(@"[present] %.1f fps, %dx%d", g.fps, w, h);
-                logged = now;
-            }
         }
+        if (entered - logged >= 5.0) {
+            const double n = std::max(1, g.log_frames);
+            const char *thermal[] = {"nominal", "fair", "serious", "critical"};
+            fprintf(stderr, "[present] %.1f fps, %dx%d | per frame: game %.2f ms, present %.2f ms (wait %.2f ms) | thermal %s\n",
+                    g.fps, w, h, g.game_s * 1000 / n, g.present_s * 1000 / n, g.wait_s * 1000 / n,
+                    thermal[std::clamp<NSInteger>(NSProcessInfo.processInfo.thermalState, 0, 3)]);
+            g.game_s = g.present_s = g.wait_s = 0;
+            g.log_frames = 0;
+            logged = entered;
+        }
+        g.log_frames++;
     }
     @autoreleasepool {
         // The layer at the screen's own pixels: SDL makes it at 1x (points) unless the window asks for high pixel
@@ -320,7 +331,9 @@ int present(const uint32_t *argb, int w, int h, int stride, float aspect, int de
             }
         }
 
+        const double wait0 = CACurrentMediaTime();
         id<CAMetalDrawable> drawable = [g.layer nextDrawable];
+        g.wait_s += CACurrentMediaTime() - wait0;
         if (!drawable) {
             [cb commit];
             return 1;
@@ -349,6 +362,8 @@ int present(const uint32_t *argb, int w, int h, int stride, float aspect, int de
         [cb presentDrawable:drawable];
         [cb commit];
     }
+    g.last_exit = CACurrentMediaTime();
+    g.present_s += g.last_exit - entered;
     return 1;
 }
 

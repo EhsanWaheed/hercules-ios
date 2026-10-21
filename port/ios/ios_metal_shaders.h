@@ -23,6 +23,9 @@ struct Prim {
     int tw_mask_x, tw_mask_y, tw_off_x, tw_off_y;
     int mod_r, mod_g, mod_b, pad0;
     int lim[4];
+    // the triangle's edge walk, fixed per primitive (gpu_sw_edges.h): fp(x0), fp(x1), the long edge's step, the
+    // short edges' steps (y0->y1, y1->y2)
+    long fp0, fp1, long_step, short_step0, short_step1;
 };
 
 enum { K_FLAT_TRI, K_GOURAUD_TRI, K_TEX_TRI, K_SHADED_TEX_TRI, K_FLAT_RECT, K_TEX_RECT, K_TEX_RECT_SCALED,
@@ -44,33 +47,28 @@ vertex VO prim_vs(uint vid [[vertex_id]], uint iid [[instance_id]], const device
 
 struct FO { ushort c [[color(0)]]; };
 
-// ---- gpu_sw_edges.h ----
-static long edge_fp(int x) { return (long(x) << 32) + ((1L << 32) - (1 << 11)); }
-static long edge_step(int dx, int dy) {
-    long rounding = dx < 0 ? -long(dy - 1) : (dx > 0 ? long(dy - 1) : 0L);
-    return ((long(dx) << 32) + rounding) / long(dy);
-}
+// ---- gpu_sw_edges.h psx_triangle_edges_at_y, with the steps the CPU worked out once per triangle ----
 static int edge_unfp(long fp) { return int(ulong(fp) >> 32); }
-static void edges_at_y(int x0, int y0, int x1, int y1, int x2, int y2, int y, thread int &lx, thread int &sx) {
-    long long_step = edge_step(x2 - x0, y2 - y0);
-    lx = edge_unfp(edge_fp(x0) + long_step * long(y - y0));
-    if (y < y1) {
-        long short_step = edge_step(x1 - x0, y1 - y0);
-        sx = edge_unfp(edge_fp(x0) + short_step * long(y - y0));
-    } else {
-        long short_step = edge_step(x2 - x1, y2 - y1);
-        sx = edge_unfp(edge_fp(x1) + short_step * long(y - y1));
-    }
+static void edges_at_y(const device Prim &p, int y, thread int &lx, thread int &sx) {
+    lx = edge_unfp(p.fp0 + p.long_step * long(y - p.y[0]));
+    if (y < p.y[1])
+        sx = edge_unfp(p.fp0 + p.short_step0 * long(y - p.y[0]));
+    else
+        sx = edge_unfp(p.fp1 + p.short_step1 * long(y - p.y[1]));
 }
 
 static float fdiv(float a, float b) { return precise::divide(a, b); }
 
-// ---- texels (native VRAM snapshot) ----
-static ushort vram_get(const device ushort *vram, int snap, int x, int y) {
-    return vram[uint(snap) * 524288u + uint(y & 511) * 1024u + uint(x & 1023)];
+// ---- texels: native VRAM as of the primitive, through its snapshot's tile table (128 tiles of 64x64, each in a
+// page of the pool) ----
+struct Vram { const device ushort *pages; const device uint *tables; };
+static ushort vram_get(Vram vram, int snap, int x, int y) {
+    x &= 1023; y &= 511;
+    const uint page = vram.tables[uint(snap) * 128u + uint(y >> 6) * 16u + uint(x >> 6)];
+    return vram.pages[page * 4096u + uint(y & 63) * 64u + uint(x & 63)];
 }
 
-static ushort texel_fetch(const device Prim &p, const device ushort *vram, int u, int v) {
+static ushort texel_fetch(const device Prim &p, Vram vram, int u, int v) {
     if ((p.tw_mask_x | p.tw_mask_y) != 0) {
         u = (u & ~(p.tw_mask_x * 8)) | ((p.tw_off_x & p.tw_mask_x) * 8);
         v = (v & ~(p.tw_mask_y * 8)) | ((p.tw_off_y & p.tw_mask_y) * 8);
@@ -91,7 +89,7 @@ static ushort texel_fetch(const device Prim &p, const device ushort *vram, int u
     return vram_get(vram, p.snap, tpx + u, tpy + v);
 }
 
-static ushort bl_fetch(const device Prim &p, const device ushort *vram, int u, int v) {
+static ushort bl_fetch(const device Prim &p, Vram vram, int u, int v) {
     u &= 0xFF; v &= 0xFF;
     if ((p.tw_mask_x | p.tw_mask_y) == 0) {
         if (u < p.lim[0]) u = p.lim[0]; else if (u > p.lim[2]) u = p.lim[2];
@@ -100,7 +98,7 @@ static ushort bl_fetch(const device Prim &p, const device ushort *vram, int u, i
     return texel_fetch(p, vram, u, v);
 }
 
-static ushort texel_fetch_bilinear(const device Prim &p, const device ushort *vram, float fu, float fv) {
+static ushort texel_fetch_bilinear(const device Prim &p, Vram vram, float fu, float fv) {
     int iu = int(floor(fu)), iv = int(floor(fv));
     int fx = int((fu - float(iu)) * 256.0f) - 128;
     int fy = int((fv - float(iv)) * 256.0f) - 128;
@@ -131,7 +129,7 @@ static ushort texel_fetch_bilinear(const device Prim &p, const device ushort *vr
 
 static float bilinear_shift(int s) { return 0.5f / float(s > 0 ? s : 1) - 1.0f / 64.0f; }
 
-static ushort tex(const device Prim &p, const device ushort *vram, float fu, float fv) {
+static ushort tex(const device Prim &p, Vram vram, float fu, float fv) {
     if (p.flags & F_FILTER) {
         float sh = bilinear_shift(p.s);
         return texel_fetch_bilinear(p, vram, fu + sh, fv + sh);
@@ -180,8 +178,9 @@ static bool in_clip(const device Prim &p, int x, int y) {
 }
 
 fragment FO prim_fs(VO in [[stage_in]], ushort dst [[color(0)]], const device Prim *prims [[buffer(0)]],
-                    const device ushort *vram [[buffer(1)]]) {
+                    const device ushort *pages [[buffer(1)]], const device uint *tables [[buffer(2)]]) {
     const device Prim &p = prims[in.id];
+    const Vram vram = {pages, tables};
     const int px = int(in.pos.x), py = int(in.pos.y);
 
     if (p.kind == K_FILL) { FO o; o.c = ushort(p.color); return o; }
@@ -190,11 +189,11 @@ fragment FO prim_fs(VO in [[stage_in]], ushort dst [[color(0)]], const device Pr
     }
 
     if (p.kind <= K_SHADED_TEX_TRI) {
-        const int x0 = p.x[0], y0 = p.y[0], x1 = p.x[1], y1 = p.y[1], x2 = p.x[2], y2 = p.y[2];
+        const int y0 = p.y[0], y1 = p.y[1], y2 = p.y[2];
         if (py < y0 || py >= y2 || py < p.cy1 || py > p.cy2) discard_fragment();
         const int dy_total = y2 - y0;
         int xa, xb;
-        edges_at_y(x0, y0, x1, y1, x2, y2, py, xa, xb);
+        edges_at_y(p, py, xa, xb);
         if (p.kind == K_FLAT_TRI) {
             if (xa > xb) { int t = xa; xa = xb; xb = t; }
             if (px < max(xa, p.cx1) || px >= min(xb, p.cx2 + 1)) discard_fragment();
