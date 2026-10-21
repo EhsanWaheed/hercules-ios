@@ -86,7 +86,9 @@ target_sources(psx-runtime PRIVATE
     "${HERC_ROOT}/mods/src/hercules_widescreen.c"
     "${HERC_ROOT}/mods/src/hercules_frame_blend.c"
     "${HERC_ROOT}/mods/src/hercules_ntsc_speed.c")
-target_include_directories(psx-runtime PRIVATE "${HERC_VERSION_DIR}")
+# -iquote, not -I: the folder's VERSION file would shadow <version> on a
+# case-insensitive file system (macOS, iOS builds).
+target_compile_options(psx-runtime PRIVATE "SHELL:-iquote \"${HERC_VERSION_DIR}\"")
 
 # The launcher, compiled into the game executable (psx_game_launcher.h): a
 # menu in the style of the 1997 title screens, its art decoded from the
@@ -101,3 +103,7 @@ target_include_directories(psx-runtime PRIVATE "${HERC_ROOT}/launcher_native")
 target_compile_definitions(psx-runtime PRIVATE PSX_HOST_OSD_VISUAL=1)
 # the launcher picks the build for the player's disc release (launcher_native/hl_launcher.cpp)
 target_compile_definitions(psx-runtime PRIVATE HERCULES_GAME_ID="${HERCULES_VERSION}")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    include("${HERC_ROOT}/ios/ios.cmake")
+endif()

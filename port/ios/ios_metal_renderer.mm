@@ -1,0 +1,1112 @@
+// ios_metal_renderer.mm - the Metal renderer: the software renderer's scaled picture drawn by the GPU.
+//
+// The software renderer draws every primitive twice at internal resolution S: into native VRAM (the authoritative
+// copy the game reads back and samples textures from) and into an S-scaled mirror the display shows, plus a
+// native-wide surface in widescreen (gpu_sw_renderer.c). The mirror is what grows with S*S. This backend keeps the
+// native pass on the CPU, unchanged (the software renderer at 1x: exact, and VRAM reads never wait on the GPU), and
+// draws the mirrors on the GPU: each primitive is recorded with the software renderer's own scaled coordinates and
+// replayed by a fragment shader that repeats its per-pixel arithmetic (ios_metal_shaders.h).
+//
+// Textures: a primitive samples native VRAM as it is when the CPU has drawn everything before it. The GPU reads a
+// snapshot of native VRAM (a ring of copies); a new snapshot is taken only when a primitive samples a 64x64 tile
+// drawn since the last one.
+//
+// The frame reaches the presenter (ios_present.mm) without a CPU readback: render_display_hires and
+// render_wide_display hand it the GPU texture and the region to show.
+#include "ios_metal_renderer.h"
+
+#include "ios_metal_shaders.h"
+
+extern "C" {
+#include "gpu_render.h"
+#include "gpu_sw_renderer.h"
+#include "gpu_uv.h"
+uint16_t *gpu_get_vram_ptr(void);
+int psx_ws_prim_in_backdrop(void);
+extern int g_ws_bd_stretch_on, g_ws_bd_stretch_pct;
+}
+
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+namespace {
+
+constexpr int kVramW = 1024, kVramH = 512;
+constexpr int kMaxScale = 4;      // main.cpp sizes its staging for SW_MAX_INTERNAL_SCALE
+constexpr int kSnapshots = 24;    // native VRAM copies in the ring (1 MiB each)
+constexpr int kWideSurfaces = 4;  // as the software renderer
+constexpr int kInFlight = 3;
+
+// Mirrors ios_metal_shaders.h Prim (all 4-byte fields).
+struct Prim {
+    int32_t kind, flags, snap, s;
+    int32_t cx1, cy1, cx2, cy2;
+    int32_t bx0, by0, bx1, by1;
+    int32_t x[3], y[3];
+    int32_t u[3], v[3];
+    int32_t r[3], g[3], b[3];
+    float q[3];
+    int32_t texpage, clut_x, clut_y, color;
+    int32_t tw_mask_x, tw_mask_y, tw_off_x, tw_off_y;
+    int32_t mod_r, mod_g, mod_b, pad0;
+    int32_t lim[4];
+};
+static_assert(sizeof(Prim) == 52 * 4, "Prim layout: 52 four-byte fields, as the shader's");
+
+enum { K_FLAT_TRI, K_GOURAUD_TRI, K_TEX_TRI, K_SHADED_TEX_TRI, K_FLAT_RECT, K_TEX_RECT, K_TEX_RECT_SCALED, K_BLOCK,
+       K_FILL, K_UPLOAD };
+enum { F_SEMI = 1, F_MASK_SET = 8, F_MASK_CHECK = 16, F_RAW = 32, F_PERSPECTIVE = 64, F_FILTER = 128 };
+
+// A render target: the hi-res mirror or a wide surface, and the primitives recorded for it since the last commit.
+struct Target {
+    id<MTLTexture> tex;
+    int w = 0, h = 0;
+    int base = -1;  // wide: the framebuffer's VRAM x (base_x)
+    std::vector<Prim> prims;
+};
+
+struct State {
+    id<MTLDevice> device;
+    id<MTLCommandQueue> queue;
+    id<MTLRenderPipelineState> prim_pipe, decode_pipe;
+    id<MTLBuffer> snaps;                 // kSnapshots x 1 MiB
+    uint64_t snap_used[kSnapshots] = {};  // commit serial that last used the slot
+    int snap_cur = -1, snap_next = 0;
+    uint64_t dirty[2] = {~0ull, ~0ull};  // 64x64 tiles drawn since the current snapshot (16 x 8)
+    uint64_t serial = 1;                 // the commit being recorded
+    std::atomic<uint64_t> completed{0};
+    dispatch_semaphore_t inflight;
+    bool ready = false, failed = false;
+    bool verify = false;     // ios.metalVerify: the software renderer draws its own mirror too, compared each frame
+    uint64_t verify_frames = 0, verify_bad_frames = 0, verify_bad_pixels = 0;
+    uint16_t *vram = nullptr;
+    int scale = 1;
+    Target hires;
+    Target wide[kWideSurfaces];
+    int wide_w = 0, wide_off = 0, wide_cur = -1, wide_cur_base = 0;
+    int view_enabled = 0, view_shift = 0, view_pad_left = 0, view_pad_right = 0;
+    // draw state, as the software renderer keeps it (it is forwarded there too)
+    int clip_x1 = 0, clip_y1 = 0, clip_x2 = kVramW - 1, clip_y2 = kVramH - 1;
+    int semi = 0, semi_mode = 0, mask_set = 0, mask_check = 0;
+    int tw_mask_x = 0, tw_mask_y = 0, tw_off_x = 0, tw_off_y = 0;
+    int mod_r = 16, mod_g = 16, mod_b = 16, raw = 0;
+    int precise = 0, perspective = 0;
+    int32_t px16[3] = {}, py16[3] = {};
+    float q[3] = {};
+    // the frame for the presenter
+    HercMetalFrame frame = {};
+    bool frame_pending = false;
+};
+
+State &st() {
+    static State *s = new State;
+    return *s;
+}
+
+// ---- setup ---------------------------------------------------------------------------------------------------
+
+bool ensure_ready() {
+    State &s = st();
+    if (s.ready)
+        return true;
+    if (s.failed)
+        return false;
+    s.device = herc_metal_device();
+    s.queue = herc_metal_queue();
+    NSError *err = nil;
+    MTLCompileOptions *opts = [MTLCompileOptions new];
+    if (@available(iOS 18.0, *))
+        opts.mathMode = MTLMathModeSafe;  // IEEE arithmetic, as the CPU's
+    id<MTLLibrary> lib = [s.device newLibraryWithSource:@(kHercMetalShaders) options:opts error:&err];
+    if (!lib) {
+        fprintf(stderr, "[metal] shaders: %s\n", err.localizedDescription.UTF8String);
+        s.failed = true;
+        return false;
+    }
+    MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+    d.vertexFunction = [lib newFunctionWithName:@"prim_vs"];
+    d.fragmentFunction = [lib newFunctionWithName:@"prim_fs"];
+    d.colorAttachments[0].pixelFormat = MTLPixelFormatR16Uint;
+    s.prim_pipe = [s.device newRenderPipelineStateWithDescriptor:d error:&err];
+    if (!s.prim_pipe)
+        fprintf(stderr, "[metal] primitive pipeline: %s\n", err.localizedDescription.UTF8String);
+    d.vertexFunction = [lib newFunctionWithName:@"decode_vs"];
+    d.fragmentFunction = [lib newFunctionWithName:@"decode_fs"];
+    d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    s.decode_pipe = [s.device newRenderPipelineStateWithDescriptor:d error:&err];
+    s.snaps = [s.device newBufferWithLength:(NSUInteger)kSnapshots * kVramW * kVramH * 2
+                                    options:MTLResourceStorageModeShared];
+    if (!s.prim_pipe || !s.decode_pipe || !s.snaps) {
+        fprintf(stderr, "[metal] setup failed: %s\n", err.localizedDescription.UTF8String);
+        s.failed = true;
+        return false;
+    }
+    s.inflight = dispatch_semaphore_create(kInFlight);
+    s.vram = gpu_get_vram_ptr();
+    s.ready = true;
+    fprintf(stderr, "[metal] renderer ready on %s\n", s.device.name.UTF8String);
+    return true;
+}
+
+id<MTLTexture> make_target(int w, int h) {
+    MTLTextureDescriptor *t = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Uint
+                                                                                 width:w
+                                                                                height:h
+                                                                             mipmapped:NO];
+    t.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    t.storageMode = MTLStorageModePrivate;
+    return [st().device newTextureWithDescriptor:t];
+}
+
+// ---- native VRAM snapshots -------------------------------------------------------------------------------
+
+void mark_dirty(int x, int y, int w, int h) {
+    State &s = st();
+    if (w <= 0 || h <= 0)
+        return;
+    // wrapped rects: mark generously (whole width / height)
+    int x0 = x & (kVramW - 1), y0 = y & (kVramH - 1);
+    int x1 = x0 + w - 1, y1 = y0 + h - 1;
+    if (x1 >= kVramW) { x0 = 0; x1 = kVramW - 1; }
+    if (y1 >= kVramH) { y0 = 0; y1 = kVramH - 1; }
+    for (int ty = y0 >> 6; ty <= y1 >> 6; ++ty)
+        for (int tx = x0 >> 6; tx <= x1 >> 6; ++tx) {
+            const int i = ty * 16 + tx;
+            s.dirty[i >> 6] |= 1ull << (i & 63);
+        }
+}
+
+bool tiles_dirty(int x, int y, int w, int h) {
+    State &s = st();
+    int x0 = x & (kVramW - 1), y0 = y & (kVramH - 1);
+    int x1 = x0 + w - 1, y1 = y0 + h - 1;
+    if (x1 >= kVramW) { x0 = 0; x1 = kVramW - 1; }
+    if (y1 >= kVramH) { y0 = 0; y1 = kVramH - 1; }
+    for (int ty = y0 >> 6; ty <= y1 >> 6; ++ty)
+        for (int tx = x0 >> 6; tx <= x1 >> 6; ++tx) {
+            const int i = ty * 16 + tx;
+            if (s.dirty[i >> 6] & (1ull << (i & 63)))
+                return true;
+        }
+    return false;
+}
+
+void commit();
+
+// The snapshot a primitive reading native VRAM over these rects should use (taking a new one if they changed).
+int snapshot_for(const int (*rects)[4], int n) {
+    State &s = st();
+    if (!s.ready)
+        return 0;
+    bool need = s.snap_cur < 0;
+    for (int i = 0; i < n && !need; ++i)
+        need = tiles_dirty(rects[i][0], rects[i][1], rects[i][2], rects[i][3]);
+    if (!need)
+        return s.snap_cur;
+    // the next slot, once no committed frame still reads it; a slot this very recording uses means the ring is
+    // full: commit what is recorded first
+    const int slot = s.snap_next;
+    if (s.snap_used[slot] == s.serial)
+        commit();
+    while (s.snap_used[slot] > s.completed.load())
+        usleep(200);
+    memcpy((uint8_t *)s.snaps.contents + (size_t)slot * kVramW * kVramH * 2, s.vram, (size_t)kVramW * kVramH * 2);
+    s.snap_used[slot] = s.serial;
+    s.snap_cur = slot;
+    s.snap_next = (slot + 1) % kSnapshots;
+    s.dirty[0] = s.dirty[1] = 0;
+    return slot;
+}
+
+// The VRAM a textured primitive samples: its texture page (as wide as its depth reads) and its CLUT row.
+int snapshot_for_texture(uint16_t texpage, int clut_x, int clut_y) {
+    const int depth = (texpage >> 7) & 3;
+    const int tpx = (texpage & 0xF) * 64, tpy = ((texpage >> 4) & 1) * 256;
+    const int width = depth == 0 ? 64 : depth == 1 ? 128 : 256;
+    const int clut_w = depth == 0 ? 16 : depth == 1 ? 256 : 0;
+    const int rects[2][4] = {{tpx, tpy, width, 256}, {clut_x, clut_y, clut_w ? clut_w : 1, 1}};
+    return snapshot_for(rects, clut_w ? 2 : 1);
+}
+
+// ---- recording -------------------------------------------------------------------------------------------
+
+int flags_now(bool textured) {
+    State &s = st();
+    int f = 0;
+    if (s.semi)
+        f |= F_SEMI | (s.semi_mode << 1);
+    if (s.mask_set) f |= F_MASK_SET;
+    if (s.mask_check) f |= F_MASK_CHECK;
+    if (textured && s.raw) f |= F_RAW;
+    if (textured && sw_texture_filter()) f |= F_FILTER;
+    return f;
+}
+
+Prim base_prim(int kind, int flags) {
+    State &s = st();
+    Prim p = {};
+    p.kind = kind;
+    p.flags = flags;
+    p.snap = std::max(s.snap_cur, 0);
+    p.tw_mask_x = s.tw_mask_x; p.tw_mask_y = s.tw_mask_y; p.tw_off_x = s.tw_off_x; p.tw_off_y = s.tw_off_y;
+    p.mod_r = s.mod_r; p.mod_g = s.mod_g; p.mod_b = s.mod_b;
+    p.lim[0] = 0; p.lim[1] = 0; p.lim[2] = 255; p.lim[3] = 255;
+    return p;
+}
+
+// The clip rectangles of the two targets (gpu_sw_renderer.c rt_hires, rt_wide).
+void clip_hires(Prim &p) {
+    State &s = st();
+    const int k = s.scale;
+    p.s = k;
+    p.cx1 = s.clip_x1 * k; p.cy1 = s.clip_y1 * k;
+    p.cx2 = s.clip_x2 * k + (k - 1); p.cy2 = s.clip_y2 * k + (k - 1);
+}
+void clip_wide(Prim &p) {
+    State &s = st();
+    const int k = s.scale;
+    p.s = k;
+    p.cx1 = s.view_pad_left * k; p.cy1 = s.clip_y1 * k;
+    p.cx2 = (s.wide_w - s.view_pad_right) * k - 1; p.cy2 = s.clip_y2 * k + (k - 1);
+}
+
+void push(Target &t, Prim p) {
+    // the quad, clipped to the clip rect and the target
+    p.bx0 = std::max({p.bx0, p.cx1, 0});
+    p.by0 = std::max({p.by0, p.cy1, 0});
+    p.bx1 = std::min({p.bx1, p.cx2 + 1, t.w});
+    p.by1 = std::min({p.by1, p.cy2 + 1, t.h});
+    if (p.bx0 >= p.bx1 || p.by0 >= p.by1)
+        return;
+    t.prims.push_back(p);
+}
+
+// Unclipped (fills, uploads): only the target's bounds.
+void push_raw(Target &t, Prim p) {
+    p.cx1 = p.cy1 = 0; p.cx2 = t.w - 1; p.cy2 = t.h - 1;
+    push(t, p);
+}
+
+bool have_hires() { return st().scale > 1 && st().hires.tex; }
+// Without Metal (no framebuffer fetch: the Simulator) the software renderer does everything, its mirror included.
+bool passthrough() { return !st().ready; }
+// The software renderer keeps its own mirror and wide surfaces: without Metal, or to compare against.
+bool sw_mirrors() { return passthrough() || st().verify; }
+Target *wide_target() {
+    State &s = st();
+    return s.wide_cur >= 0 && s.wide[s.wide_cur].tex ? &s.wide[s.wide_cur] : nullptr;
+}
+
+// gpu_sw_renderer.c precise_scaled / wide_dx / wide_bd_*
+int precise_scaled(int axis, int vertex, int fallback, int k) {
+    State &s = st();
+    if (!s.precise)
+        return fallback * k;
+    int64_t fixed = axis ? s.py16[vertex] : s.px16[vertex];
+    int64_t scaled = fixed * k;
+    if (scaled >= 0) return (int)((scaled + 0x8000) >> 16);
+    return -(int)((-scaled + 0x8000) >> 16);
+}
+int wide_dx() { State &s = st(); return s.wide_off + s.view_shift - s.wide_cur_base; }
+struct Bd { int on; float scale, center; };
+Bd bd_get() {
+    State &s = st();
+    Bd b = {0, 1.0f, 0.0f};
+    if (g_ws_bd_stretch_on && s.wide_w > 0 && wide_target() && psx_ws_prim_in_backdrop()) {
+        const int native_w = s.wide_w - 2 * s.wide_off;
+        if (native_w > 0) {
+            b.on = 1;
+            b.scale = g_ws_bd_stretch_pct > 0 ? (float)g_ws_bd_stretch_pct / 100.0f : (float)s.wide_w / (float)native_w;
+            b.center = (float)s.wide_cur_base + (float)native_w / 2.0f;
+        }
+    }
+    return b;
+}
+int bd_x(const Bd &b, int x) {
+    if (!b.on) return x;
+    float v = ((float)x - b.center) * b.scale + b.center;
+    return (int)(v < 0.0f ? v - 0.5f : v + 0.5f);
+}
+int precise_wide_x(int vertex, int fallback, int k, int dx, const Bd &bd) {
+    if (st().precise)
+        return precise_scaled(0, vertex, fallback, k) + dx * k;
+    return (bd_x(bd, fallback) + dx) * k;
+}
+void precise_consumed() { st().precise = 0; st().perspective = 0; }
+
+// A triangle in target space: sorted by y as the software rasterizer sorts it (vertex attributes travel along).
+struct Vert { int x, y, u, v, r, g, b; float q; };
+void tri_into(Prim &p, Vert a, Vert b, Vert c) {
+    if (a.y > b.y) std::swap(a, b);
+    if (a.y > c.y) std::swap(a, c);
+    if (b.y > c.y) std::swap(b, c);
+    const Vert v[3] = {a, b, c};
+    for (int i = 0; i < 3; ++i) {
+        p.x[i] = v[i].x; p.y[i] = v[i].y; p.u[i] = v[i].u; p.v[i] = v[i].v;
+        p.r[i] = v[i].r; p.g[i] = v[i].g; p.b[i] = v[i].b; p.q[i] = v[i].q;
+    }
+    p.bx0 = std::min({a.x, b.x, c.x}) - 1;
+    p.bx1 = std::max({a.x, b.x, c.x}) + 2;
+    p.by0 = a.y;
+    p.by1 = c.y;
+}
+
+// Records a triangle for the hi-res mirror and the active wide surface.
+void record_tri(int kind, int flags, const int xs[3], const int ys[3], const int us[3], const int vs[3],
+                const int rs[3], const int gs[3], const int bs[3], Prim proto) {
+    State &s = st();
+    const int k = s.scale;
+    if (s.perspective) proto.flags |= F_PERSPECTIVE;
+    (void)kind;
+    if (have_hires()) {
+        Prim p = proto;
+        clip_hires(p);
+        Vert v[3];
+        for (int i = 0; i < 3; ++i)
+            v[i] = {precise_scaled(0, i, xs[i], k), precise_scaled(1, i, ys[i], k), us[i], vs[i], rs[i], gs[i], bs[i],
+                    s.q[i]};
+        tri_into(p, v[0], v[1], v[2]);
+        if (p.y[2] != p.y[0])
+            push(s.hires, p);
+    }
+    if (Target *w = wide_target()) {
+        Prim p = proto;
+        clip_wide(p);
+        const int dx = wide_dx();
+        const Bd bd = bd_get();
+        Vert v[3];
+        for (int i = 0; i < 3; ++i)
+            v[i] = {precise_wide_x(i, xs[i], k, dx, bd), precise_scaled(1, i, ys[i], k), us[i], vs[i], rs[i], gs[i],
+                    bs[i], s.q[i]};
+        tri_into(p, v[0], v[1], v[2]);
+        if (p.y[2] != p.y[0])
+            push(*w, p);
+    }
+    (void)flags;
+}
+
+void rect_into(Prim &p, int x, int y, int w, int h) {
+    p.x[0] = x; p.y[0] = y; p.x[1] = w; p.y[1] = h;
+    p.bx0 = x; p.by0 = y; p.bx1 = x + w; p.by1 = y + h;
+}
+
+void tri_bbox_dirty(const int xs[3], const int ys[3]) {
+    State &s = st();
+    int x0 = std::max(std::min({xs[0], xs[1], xs[2]}), s.clip_x1);
+    int x1 = std::min(std::max({xs[0], xs[1], xs[2]}), s.clip_x2);
+    int y0 = std::max(std::min({ys[0], ys[1], ys[2]}), s.clip_y1);
+    int y1 = std::min(std::max({ys[0], ys[1], ys[2]}), s.clip_y2);
+    if (x0 <= x1 && y0 <= y1)
+        mark_dirty(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+}
+
+void rect_dirty(int x, int y, int w, int h) {
+    State &s = st();
+    int x0 = std::max(x, s.clip_x1), x1 = std::min(x + w - 1, s.clip_x2);
+    int y0 = std::max(y, s.clip_y1), y1 = std::min(y + h - 1, s.clip_y2);
+    if (x0 <= x1 && y0 <= y1)
+        mark_dirty(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+}
+
+// Raw writes of native VRAM into the hi-res mirror (transfers, single pixels, a rebuild): pixel for pixel from the
+// snapshot, s*s each (gpu_sw_renderer.c sw_vram_transfer_in / sw_vram_write / hr_rebuild_from_vram).
+void record_upload(int x, int y, int w, int h) {
+    State &s = st();
+    if (!have_hires() || w <= 0 || h <= 0)
+        return;
+    const int k = s.scale;
+    const int rects[1][4] = {{x, y, w, h}};
+    const int snap = snapshot_for(rects, 1);
+    x &= kVramW - 1;
+    y &= kVramH - 1;
+    // split where the rect wraps
+    const int xs[2][2] = {{x, std::min(w, kVramW - x)}, {0, x + w - kVramW}};
+    const int ys[2][2] = {{y, std::min(h, kVramH - y)}, {0, y + h - kVramH}};
+    for (auto &rx : xs)
+        for (auto &ry : ys) {
+            if (rx[1] <= 0 || ry[1] <= 0)
+                continue;
+            Prim p = base_prim(K_UPLOAD, 0);
+            p.snap = snap;
+            p.s = k;
+            rect_into(p, rx[0] * k, ry[0] * k, rx[1] * k, ry[1] * k);
+            push_raw(s.hires, p);
+        }
+}
+
+// ---- the backend's entry points ----------------------------------------------------------------------------
+
+void m_init(uint16_t *vram) {
+    sw_renderer_init(vram);
+    State &s = st();
+    s.vram = vram;
+    s.clip_x1 = s.clip_y1 = 0;
+    s.clip_x2 = kVramW - 1; s.clip_y2 = kVramH - 1;
+    s.semi = s.semi_mode = s.mask_set = s.mask_check = 0;
+    s.tw_mask_x = s.tw_mask_y = s.tw_off_x = s.tw_off_y = 0;
+    s.mod_r = s.mod_g = s.mod_b = 16;
+    s.raw = 0;
+    s.dirty[0] = s.dirty[1] = ~0ull;
+    s.snap_cur = -1;
+    record_upload(0, 0, kVramW, kVramH);
+}
+
+void m_set_scale(int scale) {
+    State &s = st();
+    scale = std::clamp(scale, 1, kMaxScale);
+    s.verify = [NSUserDefaults.standardUserDefaults boolForKey:@"ios.metalVerify"];
+    if (!ensure_ready()) {
+        sw_renderer_set_scale(scale);  // passthrough: the software renderer's own mirror
+        s.scale = scale;
+        fprintf(stderr, "[metal] unavailable: the software renderer draws at %dx\n", scale);
+        return;
+    }
+    sw_renderer_set_scale(s.verify ? scale : 1);  // the CPU keeps native only (and its mirror when verifying)
+    commit();
+    s.scale = scale;
+    s.hires = Target();
+    for (auto &w : s.wide) w = Target();
+    s.wide_cur = -1;
+    if (scale > 1) {
+        s.hires.w = kVramW * scale;
+        s.hires.h = kVramH * scale;
+        s.hires.tex = make_target(s.hires.w, s.hires.h);
+        s.dirty[0] = s.dirty[1] = ~0ull;
+        record_upload(0, 0, kVramW, kVramH);  // the mirror starts as native VRAM, as the software renderer's
+    }
+    fprintf(stderr, "[metal] internal scale %d\n", s.scale);
+}
+
+int m_scale(void) { return passthrough() ? sw_renderer_scale() : st().scale; }
+
+void m_set_texture_filter(int bilinear) { sw_set_texture_filter(bilinear); }
+int m_texture_filter(void) { return sw_texture_filter(); }
+
+void m_set_semi(int enabled, int mode) {
+    sw_set_semi_transparency(enabled, mode);
+    st().semi = enabled;
+    st().semi_mode = mode & 3;
+}
+void m_set_mask(int set_bit, int check_bit) {
+    sw_set_mask_bits(set_bit, check_bit);
+    st().mask_set = set_bit;
+    st().mask_check = check_bit;
+}
+void m_set_tw(uint32_t raw) {
+    sw_set_texture_window(raw);
+    State &s = st();
+    s.tw_mask_x = raw & 0x1F; s.tw_mask_y = (raw >> 5) & 0x1F;
+    s.tw_off_x = (raw >> 10) & 0x1F; s.tw_off_y = (raw >> 15) & 0x1F;
+}
+void m_set_mod(int r, int g, int b, int raw_texture) {
+    sw_set_color_modulation(r, g, b, raw_texture);
+    State &s = st();
+    s.mod_r = r >> 3; s.mod_g = g >> 3; s.mod_b = b >> 3;
+    s.raw = raw_texture;
+}
+void m_set_precise(int enabled, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
+    sw_set_precise_triangle(enabled, x0, y0, x1, y1, x2, y2);
+    State &s = st();
+    s.precise = enabled && !sw_faithful_authority();
+    s.px16[0] = x0; s.py16[0] = y0; s.px16[1] = x1; s.py16[1] = y1; s.px16[2] = x2; s.py16[2] = y2;
+}
+void m_set_perspective(int enabled, float q0, float q1, float q2) {
+    sw_set_perspective_triangle(enabled, q0, q1, q2);
+    State &s = st();
+    s.perspective = enabled && q0 > 0 && q1 > 0 && q2 > 0 && !sw_faithful_authority();
+    s.q[0] = q0; s.q[1] = q1; s.q[2] = q2;
+}
+
+void m_fill_rect(int x, int y, int w, int h, uint16_t color) {
+    sw_fill_rect(x, y, w, h, color);
+    mark_dirty(x, y, w, h);
+    State &s = st();
+    if (!have_hires() || w <= 0 || h <= 0)
+        return;
+    const int k = s.scale;
+    const int x0 = (x & (kVramW - 1)) * k, y0 = (y & (kVramH - 1)) * k, W = w * k, H = h * k;
+    const int xs[2][2] = {{x0, std::min(W, s.hires.w - x0)}, {0, x0 + W - s.hires.w}};
+    const int ys[2][2] = {{y0, std::min(H, s.hires.h - y0)}, {0, y0 + H - s.hires.h}};
+    for (auto &rx : xs)
+        for (auto &ry : ys) {
+            if (rx[1] <= 0 || ry[1] <= 0)
+                continue;
+            Prim p = base_prim(K_FILL, 0);
+            p.color = color;
+            rect_into(p, rx[0], ry[0], rx[1], ry[1]);
+            push_raw(s.hires, p);
+        }
+}
+
+void m_copy_rect(int sx, int sy, int dx, int dy, int w, int h) {
+    sw_copy_rect(sx, sy, dx, dy, w, h);
+    mark_dirty(dx, dy, w, h);
+    // the destination from native VRAM: the copied picture at native detail (the software renderer copies the
+    // mirror's own pixels; copies are rare and this keeps the mirror coherent)
+    record_upload(dx, dy, w, h);
+}
+
+void m_flat_tri(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t color) {
+    sw_draw_flat_triangle(x0, y0, x1, y1, x2, y2, color);
+    const int xs[3] = {x0, x1, x2}, ys[3] = {y0, y1, y2}, z[3] = {};
+    tri_bbox_dirty(xs, ys);
+    Prim p = base_prim(K_FLAT_TRI, flags_now(false));
+    p.color = color;
+    record_tri(K_FLAT_TRI, p.flags, xs, ys, z, z, z, z, z, p);
+    precise_consumed();
+}
+
+void m_gouraud_tri(int x0, int y0, uint16_t c0, int x1, int y1, uint16_t c1, int x2, int y2, uint16_t c2) {
+    sw_draw_gouraud_triangle(x0, y0, c0, x1, y1, c1, x2, y2, c2);
+    const int xs[3] = {x0, x1, x2}, ys[3] = {y0, y1, y2}, z[3] = {};
+    const uint16_t c[3] = {c0, c1, c2};
+    int rs[3], gs[3], bs[3];
+    for (int i = 0; i < 3; ++i) { rs[i] = c[i] & 0x1F; gs[i] = (c[i] >> 5) & 0x1F; bs[i] = (c[i] >> 10) & 0x1F; }
+    tri_bbox_dirty(xs, ys);
+    Prim p = base_prim(K_GOURAUD_TRI, flags_now(false));
+    record_tri(K_GOURAUD_TRI, p.flags, xs, ys, z, z, rs, gs, bs, p);
+    precise_consumed();
+}
+
+void tex_limits_tri(Prim &p, const int xs[3], const int ys[3], const int us[3], const int vs[3]) {
+    if (!(p.flags & F_FILTER))
+        return;
+    if (st().perspective) psx_uv_tri_world_limits(us, vs, p.lim);
+    else psx_uv_tri_limits(xs, ys, us, vs, p.lim);
+}
+
+void m_tex_tri(int x0, int y0, int u0, int v0, int x1, int y1, int u1, int v1, int x2, int y2, int u2, int v2,
+               uint16_t clut_x, uint16_t clut_y, uint16_t texpage) {
+    const int64_t area2 = (int64_t)(x1 - x0) * (y2 - y0) - (int64_t)(x2 - x0) * (y1 - y0);
+    const int snap = area2 ? snapshot_for_texture(texpage, clut_x, clut_y) : 0;  // before the CPU draws it
+    sw_draw_textured_triangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2, clut_x, clut_y, texpage);
+    if (area2 == 0) { precise_consumed(); return; }
+    const int xs[3] = {x0, x1, x2}, ys[3] = {y0, y1, y2}, us[3] = {u0, u1, u2}, vs[3] = {v0, v1, v2}, z[3] = {};
+    tri_bbox_dirty(xs, ys);
+    Prim p = base_prim(K_TEX_TRI, flags_now(true));
+    p.snap = snap;
+    p.texpage = texpage; p.clut_x = clut_x; p.clut_y = clut_y;
+    tex_limits_tri(p, xs, ys, us, vs);
+    record_tri(K_TEX_TRI, p.flags, xs, ys, us, vs, z, z, z, p);
+    precise_consumed();
+}
+
+void m_shaded_tex_tri(int x0, int y0, int u0, int v0, uint32_t c0, int x1, int y1, int u1, int v1, uint32_t c1,
+                      int x2, int y2, int u2, int v2, uint32_t c2, uint16_t clut_x, uint16_t clut_y,
+                      uint16_t texpage, int raw_texture) {
+    const int64_t area2 = (int64_t)(x1 - x0) * (y2 - y0) - (int64_t)(x2 - x0) * (y1 - y0);
+    const int snap = area2 ? snapshot_for_texture(texpage, clut_x, clut_y) : 0;
+    sw_draw_shaded_textured_triangle(x0, y0, u0, v0, c0, x1, y1, u1, v1, c1, x2, y2, u2, v2, c2, clut_x, clut_y,
+                                     texpage, raw_texture);
+    if (area2 == 0) { precise_consumed(); return; }
+    const int xs[3] = {x0, x1, x2}, ys[3] = {y0, y1, y2}, us[3] = {u0, u1, u2}, vs[3] = {v0, v1, v2};
+    const uint32_t c[3] = {c0, c1, c2};
+    int rs[3], gs[3], bs[3];
+    for (int i = 0; i < 3; ++i) {
+        rs[i] = (int)(c[i] & 0xFF) >> 3; gs[i] = (int)((c[i] >> 8) & 0xFF) >> 3; bs[i] = (int)((c[i] >> 16) & 0xFF) >> 3;
+    }
+    tri_bbox_dirty(xs, ys);
+    int flags = flags_now(true) & ~F_RAW;
+    if (raw_texture) flags |= F_RAW;
+    Prim p = base_prim(K_SHADED_TEX_TRI, flags);
+    p.snap = snap;
+    p.texpage = texpage; p.clut_x = clut_x; p.clut_y = clut_y;
+    tex_limits_tri(p, xs, ys, us, vs);
+    record_tri(K_SHADED_TEX_TRI, p.flags, xs, ys, us, vs, rs, gs, bs, p);
+    precise_consumed();
+}
+
+void m_flat_rect(int x, int y, int w, int h, uint16_t color) {
+    sw_draw_flat_rect(x, y, w, h, color);
+    rect_dirty(x, y, w, h);
+    State &s = st();
+    const int k = s.scale;
+    Prim proto = base_prim(K_FLAT_RECT, flags_now(false));
+    proto.color = color;
+    if (have_hires()) {
+        Prim p = proto;
+        clip_hires(p);
+        rect_into(p, x * k, y * k, w * k, h * k);
+        push(s.hires, p);
+    }
+    if (Target *t = wide_target()) {
+        Prim p = proto;
+        clip_wide(p);
+        const int dx = wide_dx();
+        const int native_w = s.wide_w - 2 * s.wide_off;
+        const int lx = x - s.wide_cur_base, rx = x + w - s.wide_cur_base;
+        const Bd bd = bd_get();
+        if (native_w > 0 && lx <= 0 && rx >= native_w)
+            rect_into(p, 0, y * k, s.wide_w * k, h * k);  // a full-screen overlay covers the margins too
+        else if (bd.on) {
+            const int xl = bd_x(bd, x), xr = bd_x(bd, x + w);
+            rect_into(p, (xl + dx) * k, y * k, (xr - xl) * k, h * k);
+        } else
+            rect_into(p, (x + dx) * k, y * k, w * k, h * k);
+        push(*t, p);
+    }
+}
+
+void m_tex_rect(int x, int y, int w, int h, int u, int v, uint16_t clut_x, uint16_t clut_y, uint16_t texpage) {
+    const int snap = snapshot_for_texture(texpage, clut_x, clut_y);
+    sw_draw_textured_rect(x, y, w, h, u, v, clut_x, clut_y, texpage);
+    rect_dirty(x, y, w, h);
+    State &s = st();
+    const int k = s.scale;
+    Prim proto = base_prim(K_TEX_RECT, flags_now(true));
+    proto.snap = snap;
+    proto.texpage = texpage; proto.clut_x = clut_x; proto.clut_y = clut_y;
+    proto.u[0] = u; proto.v[0] = v;
+    if (proto.flags & F_FILTER) psx_uv_rect_limits(u, v, u + w, v + h, proto.lim);
+    if (have_hires()) {
+        Prim p = proto;
+        clip_hires(p);
+        rect_into(p, x * k, y * k, w * k, h * k);
+        push(s.hires, p);
+    }
+    if (Target *t = wide_target()) {
+        Prim p = proto;
+        clip_wide(p);
+        const int dx = wide_dx();
+        const Bd bd = bd_get();
+        if (bd.on) {  // stretched about the screen centre: the scaled sampler
+            const int xl = bd_x(bd, x), xr = bd_x(bd, x + w);
+            p.kind = K_TEX_RECT_SCALED;
+            p.u[0] = u; p.v[0] = v; p.u[1] = u + w; p.v[1] = v + h;
+            rect_into(p, (xl + dx) * k, y * k, (xr - xl) * k, h * k);
+        } else
+            rect_into(p, (x + dx) * k, y * k, w * k, h * k);
+        push(*t, p);
+    }
+}
+
+void m_tex_rect_scaled(int x, int y, int w, int h, int u0, int v0, int u1, int v1, uint16_t clut_x, uint16_t clut_y,
+                       uint16_t texpage) {
+    if (w <= 0 || h <= 0) return;
+    const int snap = snapshot_for_texture(texpage, clut_x, clut_y);
+    sw_draw_textured_rect_scaled(x, y, w, h, u0, v0, u1, v1, clut_x, clut_y, texpage);
+    rect_dirty(x, y, w, h);
+    State &s = st();
+    const int k = s.scale;
+    Prim proto = base_prim(K_TEX_RECT_SCALED, flags_now(true));
+    proto.snap = snap;
+    proto.texpage = texpage; proto.clut_x = clut_x; proto.clut_y = clut_y;
+    proto.u[0] = u0; proto.v[0] = v0; proto.u[1] = u1; proto.v[1] = v1;
+    if (proto.flags & F_FILTER) psx_uv_rect_limits(u0, v0, u1, v1, proto.lim);
+    if (have_hires()) {
+        Prim p = proto;
+        clip_hires(p);
+        rect_into(p, x * k, y * k, w * k, h * k);
+        push(s.hires, p);
+    }
+    if (Target *t = wide_target()) {
+        Prim p = proto;
+        clip_wide(p);
+        const int dx = wide_dx();
+        const Bd bd = bd_get();
+        const int xl = bd_x(bd, x), xr = bd_x(bd, x + w);
+        rect_into(p, (xl + dx) * k, y * k, (xr - xl) * k, h * k);
+        push(*t, p);
+    }
+}
+
+// A line pixel: an s*s block in each mirror (gpu_sw_renderer.c hr_put_block_opaque / wide_put_block_opaque).
+void line_block(int nx, int ny, uint16_t color, int flags) {
+    State &s = st();
+    const int k = s.scale;
+    Prim proto = base_prim(K_BLOCK, flags);
+    proto.color = color;
+    if (have_hires()) {
+        Prim p = proto;
+        clip_hires(p);
+        rect_into(p, nx * k, ny * k, k, k);
+        push(s.hires, p);
+    }
+    if (Target *t = wide_target()) {
+        Prim p = proto;
+        clip_wide(p);
+        rect_into(p, (nx + wide_dx()) * k, ny * k, k, k);
+        push(*t, p);
+    }
+}
+
+void m_line(int x0, int y0, int x1, int y1, uint16_t color) {
+    sw_draw_line(x0, y0, x1, y1, color);
+    const int flags = flags_now(false);
+    int dx = abs(x1 - x0), dy = -abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
+    for (;;) {
+        rect_dirty(x0, y0, 1, 1);
+        line_block(x0, y0, color, flags);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+void m_shaded_line(int x0, int y0, uint16_t c0, int x1, int y1, uint16_t c1) {
+    sw_draw_shaded_line(x0, y0, c0, x1, y1, c1);
+    const int flags = flags_now(false);
+    int dx = abs(x1 - x0), dy = -abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
+    int total = std::max(abs(x1 - x0), abs(y1 - y0));
+    if (total == 0) total = 1;
+    const int r0 = c0 & 0x1F, g0 = (c0 >> 5) & 0x1F, b0 = (c0 >> 10) & 0x1F;
+    const int r1 = c1 & 0x1F, g1 = (c1 >> 5) & 0x1F, b1 = (c1 >> 10) & 0x1F;
+    for (int step = 0;; ++step) {
+        const int r = r0 + (r1 - r0) * step / total, g = g0 + (g1 - g0) * step / total,
+                  b = b0 + (b1 - b0) * step / total;
+        rect_dirty(x0, y0, 1, 1);
+        line_block(x0, y0, (uint16_t)(r | (g << 5) | (b << 10)), flags);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+void m_vram_write(int x, int y, uint16_t pixel) {
+    sw_vram_write(x, y, pixel);
+    mark_dirty(x, y, 1, 1);
+    record_upload(x, y, 1, 1);
+}
+uint16_t m_vram_read(int x, int y) { return sw_vram_read(x, y); }
+void m_transfer_in(int x, int y, int w, int h, const uint16_t *data) {
+    sw_vram_transfer_in(x, y, w, h, data);
+    mark_dirty(x, y, w, h);
+    record_upload(x, y, w, h);
+}
+void m_transfer_out(int x, int y, int w, int h, uint16_t *data) { sw_vram_transfer_out(x, y, w, h, data); }
+
+void m_set_draw_area(int x1, int y1, int x2, int y2) {
+    sw_set_draw_area(x1, y1, x2, y2);
+    sw_get_draw_area(&st().clip_x1, &st().clip_y1, &st().clip_x2, &st().clip_y2);
+}
+void m_get_draw_area(int *x1, int *y1, int *x2, int *y2) { sw_get_draw_area(x1, y1, x2, y2); }
+void m_set_draw_offset(int x, int y) { sw_set_draw_offset(x, y); }
+
+int m_render_display(uint32_t *out, int pitch, int dx, int dy, int dw, int dh) {
+    return sw_render_display(out, pitch, dx, dy, dw, dh);
+}
+
+// The hi-res picture: committed, and handed to the presenter as a region of the mirror (no readback).
+void verify_frame(id<MTLTexture> tex, int x, int y, int w, int h, const uint32_t *cpu, int pitch);
+
+int m_render_display_hires(uint32_t *out, int pitch, int dx, int dy, int dw, int dh) {
+    State &s = st();
+    if (passthrough())
+        return sw_render_display_hires(out, pitch, dx, dy, dw, dh);
+    if (!have_hires())
+        return sw_render_display(out, pitch, dx, dy, dw, dh);
+    commit();
+    const int k = s.scale;
+    s.frame.texture = (__bridge void *)s.hires.tex;
+    s.frame.x = (dx & (kVramW - 1)) * k;
+    s.frame.y = (dy & (kVramH - 1)) * k;
+    s.frame.w = dw * k;
+    s.frame.h = dh * k;
+    s.frame_pending = true;
+    if (s.verify) {
+        sw_render_display_hires(out, pitch, dx, dy, dw, dh);
+        verify_frame(s.hires.tex, s.frame.x, s.frame.y, s.frame.w, s.frame.h, out, pitch);
+    }
+    return dw * k * dh * k;
+}
+
+// ---- native-wide surfaces (gpu_sw_renderer.c sw_wide_*) ----
+
+int wide_index(int base_x, bool create) {
+    State &s = st();
+    if (s.wide_w <= 0 || !ensure_ready())
+        return -1;
+    for (int i = 0; i < kWideSurfaces; ++i)
+        if (s.wide[i].tex && s.wide[i].base == base_x)
+            return i;
+    if (!create)
+        return -1;
+    for (int i = 0; i < kWideSurfaces; ++i)
+        if (!s.wide[i].tex) {
+            Target &t = s.wide[i];
+            t.w = s.wide_w * s.scale;
+            t.h = kVramH * s.scale;
+            t.base = base_x;
+            t.tex = make_target(t.w, t.h);
+            Prim p = base_prim(K_FILL, 0);  // calloc'd: zero
+            p.color = 0;
+            rect_into(p, 0, 0, t.w, t.h);
+            push_raw(t, p);
+            return i;
+        }
+    return -1;
+}
+
+void free_wide() {
+    State &s = st();
+    commit();
+    for (auto &w : s.wide) w = Target();
+    s.wide_cur = -1;
+}
+
+void m_wide_configure(int wide_w, int offset) {
+    if (sw_mirrors()) sw_wide_configure(wide_w, offset);
+    State &s = st();
+    if (wide_w <= 0) { free_wide(); s.wide_w = 0; s.wide_off = 0; return; }
+    if (wide_w != s.wide_w) free_wide();
+    s.wide_w = wide_w;
+    s.wide_off = offset;
+}
+void m_wide_set_view(int enabled, int shift, int pad_left, int pad_right) {
+    if (sw_mirrors()) sw_wide_set_view(enabled, shift, pad_left, pad_right);
+    State &s = st();
+    if (!enabled) shift = pad_left = pad_right = 0;
+    s.view_enabled = enabled; s.view_shift = shift; s.view_pad_left = pad_left; s.view_pad_right = pad_right;
+}
+void m_wide_set_target(int base_x) {
+    if (sw_mirrors()) sw_wide_set_target(base_x);
+    State &s = st();
+    s.wide_cur = wide_index(base_x, true);
+    s.wide_cur_base = base_x;
+}
+void m_wide_disable_target(void) {
+    if (sw_mirrors()) sw_wide_disable_target();
+    st().wide_cur = -1;
+}
+
+void wide_fill(int base_x, int x0, int y0, int x1, int y1, uint16_t color) {
+    const int i = wide_index(base_x, true);
+    if (i < 0) return;
+    Target &t = st().wide[i];
+    Prim p = base_prim(K_FILL, 0);
+    p.color = color;
+    rect_into(p, x0, y0, x1 - x0, y1 - y0);
+    push_raw(t, p);
+}
+void m_wide_clear(int base_x, int y, int h, uint16_t color) {
+    if (sw_mirrors()) sw_wide_clear(base_x, y, h, color);
+    State &s = st();
+    const int k = s.scale;
+    wide_fill(base_x, 0, y * k, s.wide_w * k, (y + h) * k, color);
+}
+void m_wide_clear_margins(int base_x, int y, int h, uint16_t color, int sides) {
+    if (sw_mirrors()) sw_wide_clear_margins(base_x, y, h, color, sides);
+    State &s = st();
+    const int k = s.scale, W = s.wide_w * k, margin = s.wide_off * k;
+    if (margin <= 0 || margin * 2 >= W) return;
+    if (sides & 1) wide_fill(base_x, 0, y * k, margin, (y + h) * k, color);
+    if (sides & 2) wide_fill(base_x, W - margin, y * k, W, (y + h) * k, color);
+}
+
+int m_render_wide_display(uint32_t *out, int pitch, int base_x, int disp_y, int disp_h) {
+    State &s = st();
+    if (passthrough())
+        return sw_render_wide_display(out, pitch, base_x, disp_y, disp_h);
+    const int i = wide_index(base_x, false);
+    if (i < 0 || s.wide_w <= 0) return 0;
+    commit();
+    const int k = s.scale;
+    Target &t = s.wide[i];
+    s.frame.texture = (__bridge void *)t.tex;
+    s.frame.x = 0;
+    s.frame.y = std::clamp(disp_y * k, 0, t.h - 1);
+    s.frame.w = t.w;
+    s.frame.h = std::min(disp_h * k, t.h - s.frame.y);
+    s.frame_pending = true;
+    if (s.verify && sw_render_wide_display(out, pitch, base_x, disp_y, disp_h) > 0)
+        verify_frame(t.tex, s.frame.x, s.frame.y, s.frame.w, s.frame.h, out, pitch);
+    return t.w * disp_h * k;
+}
+
+int m_wide_dump_full(uint32_t *, int, int *, int *, int) { return 0; }
+
+// ---- verify: the GPU's picture against the software renderer's, pixel for pixel ----
+
+void verify_frame(id<MTLTexture> tex, int x, int y, int w, int h, const uint32_t *cpu, int pitch) {
+    State &s = st();
+    id<MTLBuffer> buf = [s.device newBufferWithLength:(NSUInteger)w * h * 2 options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [s.queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromTexture:tex
+                     sourceSlice:0
+                     sourceLevel:0
+                    sourceOrigin:MTLOriginMake(x, y, 0)
+                      sourceSize:MTLSizeMake(w, h, 1)
+                        toBuffer:buf
+               destinationOffset:0
+          destinationBytesPerRow:(NSUInteger)w * 2
+        destinationBytesPerImage:(NSUInteger)w * h * 2];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    const uint16_t *gpu = (const uint16_t *)buf.contents;
+    uint64_t bad = 0;
+    int fx = -1, fy = -1;
+    uint32_t fg = 0, fc = 0;
+    for (int row = 0; row < h; ++row) {
+        const uint32_t *line = (const uint32_t *)((const uint8_t *)cpu + (size_t)row * pitch);
+        for (int col = 0; col < w; ++col) {
+            const uint16_t p = gpu[(size_t)row * w + col];
+            const int r5 = p & 31, g5 = (p >> 5) & 31, b5 = (p >> 10) & 31;
+            const uint32_t argb = 0xFF000000u | (uint32_t)((r5 << 3) | (r5 >> 2)) << 16 |
+                                  (uint32_t)((g5 << 3) | (g5 >> 2)) << 8 | (uint32_t)((b5 << 3) | (b5 >> 2));
+            if (argb != line[col]) {
+                if (!bad) { fx = col; fy = row; fg = argb; fc = line[col]; }
+                ++bad;
+            }
+        }
+    }
+    s.verify_frames++;
+    if (bad) { s.verify_bad_frames++; s.verify_bad_pixels += bad; }
+    if (bad && s.verify_bad_frames <= 20)
+        fprintf(stderr, "[metal] verify: frame %llu, %llu of %d pixels differ, first at %d,%d gpu %06x cpu %06x\n",
+                (unsigned long long)s.verify_frames, (unsigned long long)bad, w * h, fx, fy, fg & 0xFFFFFF,
+                fc & 0xFFFFFF);
+    if (s.verify_frames % 60 == 0)
+        fprintf(stderr, "[metal] verify: %llu frames, %llu differ (%llu pixels in all)\n",
+                (unsigned long long)s.verify_frames, (unsigned long long)s.verify_bad_frames,
+                (unsigned long long)s.verify_bad_pixels);
+}
+
+// ---- commit: replay what was recorded ----
+
+void encode_target(id<MTLCommandBuffer> cb, Target &t) {
+    State &s = st();
+    if (t.prims.empty() || !t.tex)
+        return;
+    id<MTLBuffer> prims = [s.device newBufferWithBytes:t.prims.data()
+                                                length:t.prims.size() * sizeof(Prim)
+                                               options:MTLResourceStorageModeShared];
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = t.tex;
+    pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
+    [enc setRenderPipelineState:s.prim_pipe];
+    const float size[2] = {(float)t.w, (float)t.h};
+    [enc setVertexBuffer:prims offset:0 atIndex:0];
+    [enc setVertexBytes:size length:sizeof size atIndex:1];
+    [enc setFragmentBuffer:prims offset:0 atIndex:0];
+    [enc setFragmentBuffer:s.snaps offset:0 atIndex:1];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:t.prims.size()];
+    [enc endEncoding];
+    t.prims.clear();
+}
+
+void commit() {
+    State &s = st();
+    if (!s.ready)
+        return;
+    bool any = !s.hires.prims.empty();
+    for (auto &w : s.wide) any = any || !w.prims.empty();
+    if (!any)
+        return;
+    dispatch_semaphore_wait(s.inflight, DISPATCH_TIME_FOREVER);
+    id<MTLCommandBuffer> cb = [s.queue commandBuffer];
+    encode_target(cb, s.hires);
+    for (auto &w : s.wide) encode_target(cb, w);
+    const uint64_t serial = s.serial++;
+    dispatch_semaphore_t sem = s.inflight;
+    [cb addCompletedHandler:^(id<MTLCommandBuffer>) {
+      uint64_t done = st().completed.load();
+      while (done < serial && !st().completed.compare_exchange_weak(done, serial)) {
+      }
+      dispatch_semaphore_signal(sem);
+    }];
+    [cb commit];
+}
+
+const GpuRenderBackend kMetal = {
+    .name = "metal (software native, GPU mirror)",
+    .init = m_init,
+    .set_scale = m_set_scale,
+    .scale = m_scale,
+    .set_texture_filter = m_set_texture_filter,
+    .texture_filter = m_texture_filter,
+    .set_semi_transparency = m_set_semi,
+    .set_mask_bits = m_set_mask,
+    .set_texture_window = m_set_tw,
+    .set_color_modulation = m_set_mod,
+    .set_precise_triangle = m_set_precise,
+    .set_perspective_triangle = m_set_perspective,
+    .fill_rect = m_fill_rect,
+    .copy_rect = m_copy_rect,
+    .draw_flat_triangle = m_flat_tri,
+    .draw_gouraud_triangle = m_gouraud_tri,
+    .draw_textured_triangle = m_tex_tri,
+    .draw_shaded_textured_triangle = m_shaded_tex_tri,
+    .draw_flat_rect = m_flat_rect,
+    .draw_textured_rect = m_tex_rect,
+    .draw_textured_rect_scaled = m_tex_rect_scaled,
+    .draw_line = m_line,
+    .draw_shaded_line = m_shaded_line,
+    .render_display = m_render_display,
+    .render_display_hires = m_render_display_hires,
+    .vram_write = m_vram_write,
+    .vram_read = m_vram_read,
+    .vram_transfer_in = m_transfer_in,
+    .vram_transfer_out = m_transfer_out,
+    .set_draw_area = m_set_draw_area,
+    .get_draw_area = m_get_draw_area,
+    .set_draw_offset = m_set_draw_offset,
+    .wide_configure = m_wide_configure,
+    .wide_set_view = m_wide_set_view,
+    .wide_set_target = m_wide_set_target,
+    .wide_disable_target = m_wide_disable_target,
+    .wide_clear = m_wide_clear,
+    .wide_clear_margins = m_wide_clear_margins,
+    .render_wide_display = m_render_wide_display,
+    .wide_dump_full = m_wide_dump_full,
+};
+
+struct Register {
+    Register() {
+        NSString *pick = [NSUserDefaults.standardUserDefaults stringForKey:@"ios.renderer"];
+        if (![pick isEqualToString:@"software"])
+            gr_register_host_software_backend(&kMetal);
+    }
+} g_register;
+
+}  // namespace
+
+// ---- shared Metal objects and the presenter's side ----
+
+id<MTLDevice> herc_metal_device(void) {
+    static id<MTLDevice> d = MTLCreateSystemDefaultDevice();
+    return d;
+}
+
+id<MTLCommandQueue> herc_metal_queue(void) {
+    static id<MTLCommandQueue> q = [herc_metal_device() newCommandQueue];
+    return q;
+}
+
+int herc_metal_take_frame(HercMetalFrame *frame) {
+    State &s = st();
+    if (!s.frame_pending)
+        return 0;
+    s.frame_pending = false;
+    *frame = s.frame;
+    return 1;
+}
+
+void herc_metal_decode(id<MTLCommandBuffer> cb, const HercMetalFrame *frame, id<MTLTexture> out) {
+    State &s = st();
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = out;
+    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
+    [enc setRenderPipelineState:s.decode_pipe];
+    [enc setFragmentTexture:(__bridge id<MTLTexture>)frame->texture atIndex:0];
+    const int rect[4] = {frame->x, frame->y, frame->w, frame->h};
+    [enc setFragmentBytes:rect length:sizeof rect atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+}
+
+int herc_metal_active(void) { return st().ready && st().scale > 1 ? 1 : 0; }

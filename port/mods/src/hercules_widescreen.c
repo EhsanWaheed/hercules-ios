@@ -79,12 +79,21 @@ static void on_hud_sprite(struct CPUState* cpu, uint32_t address) {
 }
 
 /* Option "aspect": the start value; the in-game menu switches live. At 4:3
- * the hooks below do nothing (no side margins). */
+ * the hooks below do nothing (no side margins). "screen" follows the
+ * window's own shape (phones: about 19.5:9), so a full-screen window has
+ * neither bars nor a crop. */
 static void on_activate(void) {
     char aspect[8] = "";
-    const int narrow = psx_mod_current_option_value("aspect", aspect, sizeof(aspect)) &&
-                       strcmp(aspect, "4:3") == 0;
-    if (!psx_mod_set_fixed_display_aspect(narrow ? 4 : 16, narrow ? 3 : 9))
+    const int have = psx_mod_current_option_value("aspect", aspect, sizeof(aspect));
+    int ok;
+    if (have && strcmp(aspect, "screen") == 0)
+        ok = psx_mod_set_fixed_display_aspect(16, 9) &&  /* the first window's shape */
+             psx_mod_set_adaptive_display_aspect(0, 0);
+    else if (have && strcmp(aspect, "4:3") == 0)
+        ok = psx_mod_set_fixed_display_aspect(4, 3);
+    else
+        ok = psx_mod_set_fixed_display_aspect(16, 9);
+    if (!ok)
         psx_mod_counter_add("hercules.widescreen.aspect_refused", 1);
 }
 

@@ -1,0 +1,204 @@
+From 1c5824f3eb149aee85254fa6e6d2b131188c123c Mon Sep 17 00:00:00 2001
+From: e5n97 <58152408+EhsanWaheed@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 02:00:24 +0100
+Subject: [PATCH] iOS host hooks: in-process launcher, title presenter and pad 
+ input, host software backend
+
+For the iOS port (port/ios), which runs the game inside one process with no
+system(), no second process and its own Metal presenter:
+
+- psx_game_launcher.h: a launcher may return PSX_GAME_LAUNCHER_CONTINUE to
+  start the game in the same process (psx_game_launcher_set_disc picks the
+  disc); psx_host_present_register lets a title present the software
+  renderer's frames itself; psx_host_pad_register merges a title's own input
+  (on-screen controls) into a player's pad.
+- gpu_render.h/.c: gr_register_host_software_backend lets a platform supply
+  its own backend in place of the software one (the Metal renderer keeps the
+  software rasterizer for native VRAM and draws the scaled picture on the
+  GPU); the effective backend stays software.
+- debug_server.c: mkdir -p without system() (unavailable on iOS).
+---
+ runtime/include/gpu_render.h        |  6 ++++++
+ runtime/include/psx_game_launcher.h | 21 +++++++++++++++++++++
+ runtime/src/debug_server.c          |  9 ++++++++-
+ runtime/src/gpu_render.c            |  7 ++++++-
+ runtime/src/main.cpp                | 26 ++++++++++++++++++++++++--
+ 5 files changed, 65 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/include/gpu_render.h b/runtime/include/gpu_render.h
+index 7fd5d51..b4a6eb0 100644
+--- a/runtime/include/gpu_render.h
++++ b/runtime/include/gpu_render.h
+@@ -236,6 +236,12 @@ typedef struct GpuRenderBackend {
+     void (*vram_upload_open)(int open);
+ } GpuRenderBackend;
+ 
++/* A platform's own backend in place of the software one (iOS: the Metal
++ * renderer, which keeps the software rasterizer for native VRAM and draws the
++ * scaled picture on the GPU). The effective backend stays
++ * GR_BACKEND_SOFTWARE, so every software present path is unchanged. */
++void gr_register_host_software_backend(const GpuRenderBackend *backend);
++
+ enum { GR_HD_NOTE_INVALIDATE = 0, GR_HD_NOTE_TRACK_UPLOAD = 1,
+        GR_HD_NOTE_BEGIN_UPLOAD = 2 /* GP0(A0) header: invalidate; payload streams */,
+        GR_HD_NOTE_BEGIN_COPY = 3, GR_HD_NOTE_END_COPY = 4 };
+diff --git a/runtime/include/psx_game_launcher.h b/runtime/include/psx_game_launcher.h
+index 0c99968..0f88964 100644
+--- a/runtime/include/psx_game_launcher.h
++++ b/runtime/include/psx_game_launcher.h
+@@ -1,5 +1,6 @@
+ #ifndef PSX_GAME_LAUNCHER_H
+ #define PSX_GAME_LAUNCHER_H
++#include <stdint.h>
+ /* A game's own launcher, compiled into the game executable.
+  *
+  * A title registers one function (usually from a static constructor). When it
+@@ -13,6 +14,26 @@ extern "C" {
+ #endif
+ typedef int (*PsxGameLauncherFn)(int argc, char** argv);
+ void psx_game_launcher_register(PsxGameLauncherFn fn);
++/* Returned by a launcher to start the game in this same process instead of
++ * exiting (platforms that cannot start a second process, such as iOS). The
++ * disc set with psx_game_launcher_set_disc, if any, overrides --disc. */
++#define PSX_GAME_LAUNCHER_CONTINUE (-0x7C0)
++void psx_game_launcher_set_disc(const char* path);
++
++/* A title's own presenter for the software renderer's frames (iOS: Metal +
++ * MetalFX). Called with the finished frame (0xAARRGGBB, `stride` pixels per
++ * row) and the aspect it is shown at; return 1 when it presented the frame,
++ * 0 to let the SDL renderer present it as usual. */
++typedef int (*PsxHostPresentFn)(const uint32_t* argb, int w, int h, int stride,
++                                float display_aspect, int depth24);
++void psx_host_present_register(PsxHostPresentFn fn);
++
++/* A title's own input for a player (iOS: on-screen touch controls), merged
++ * into that player's pad whatever device drives it: the PSX button word,
++ * active low (0xFFFF none pressed; bit 0 Select .. bit 15 Square, as
++ * psx_keybinds.c PSXKB_BIT_*). Called once per pad read. */
++typedef uint16_t (*PsxHostPadFn)(int player);
++void psx_host_pad_register(PsxHostPadFn fn);
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/src/debug_server.c b/runtime/src/debug_server.c
+index 7fb843d..c7109d8 100644
+--- a/runtime/src/debug_server.c
++++ b/runtime/src/debug_server.c
+@@ -16,6 +16,9 @@
+ #  define _POSIX_C_SOURCE 200809L
+ #endif
+ #include <time.h>
++#ifndef _WIN32
++#include <sys/stat.h>
++#endif
+ #include "debug_server.h"
+ #include "psx_debug_overlay.h"
+ #include "host_launch_timing.h"
+@@ -14906,7 +14909,11 @@ static void handle_overlay_dump(int id, const char *json)
+ #ifdef _WIN32
+     { char cmd[600]; snprintf(cmd, sizeof(cmd), "mkdir \"%s\" 2>nul", dir_buf); system(cmd); }
+ #else
+-    { char cmd[600]; snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\"", dir_buf); system(cmd); }
++    /* mkdir -p without a shell (iOS has no system()). */
++    { char path[512]; snprintf(path, sizeof(path), "%s", dir_buf);
++      for (char *p = path + 1; *p; p++)
++          if (*p == '/') { *p = 0; mkdir(path, 0755); *p = '/'; }
++      mkdir(path, 0755); }
+ #endif
+ 
+     uint8_t *ram      = memory_get_ram_ptr();
+diff --git a/runtime/src/gpu_render.c b/runtime/src/gpu_render.c
+index 87d37ad..88e8cdc 100644
+--- a/runtime/src/gpu_render.c
++++ b/runtime/src/gpu_render.c
+@@ -134,6 +134,9 @@ static void hd_invalidate_triangle(int x0, int y0, int x1, int y1, int x2, int y
+     hd_invalidate_draw(xmin, ymin, xmax, ymax);
+ }
+ 
++static const GpuRenderBackend *g_host_software = NULL;
++void gr_register_host_software_backend(const GpuRenderBackend *backend) { g_host_software = backend; }
++
+ void gr_set_backend(GrBackend backend) {
+     if (backend == GR_BACKEND_OPENGL) {
+         const GpuRenderBackend *gl = gl_backend_get();
+@@ -156,8 +159,10 @@ void gr_set_backend(GrBackend backend) {
+         fprintf(stdout, "psxrecomp: renderer = vulkan requested but unavailable "
+                         "— falling back to software\n");
+     }
+-    g_b = &SW_BACKEND;
++    g_b = g_host_software ? g_host_software : &SW_BACKEND;
+     g_effective = GR_BACKEND_SOFTWARE;
++    if (g_host_software)
++        fprintf(stdout, "psxrecomp: renderer = software via %s\n", g_host_software->name);
+ }
+ 
+ GrBackend gr_backend(void) { return g_effective; }
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 9bf05c8..8a63615 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -125,6 +125,9 @@ extern "C" void psx_event_step_conservative_env_init(void);
+ #include "sbi_setup.h"
+ #include "disc_path.h"
+ #include "psx_game_launcher.h" /* title-provided launcher hook */
++/* Title-provided presenter for software-rendered frames (psx_game_launcher.h). */
++static PsxHostPresentFn g_host_present = nullptr;
++extern "C" void psx_host_present_register(PsxHostPresentFn fn) { g_host_present = fn; }
+ #include "psx_game_menu.h"     /* title-provided in-game menu */
+ #include "gpu_hd_textures.h"
+ #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
+@@ -5577,7 +5580,14 @@ static void axes_to_pad_pair(int16_t vx, int16_t vy, uint8_t* obx, uint8_t* oby,
+ /* Buttons for a player's selected device (0xFFFF = none pressed). `player` is
+  * 1..5 — selects which keybinds.ini section drives a keyboard port. */
+ static int g_p1_keyboard_too = 0;   /* PSX_P1_KEYBOARD_TOO=1 */
++static PsxHostPadFn g_host_pad = nullptr;  /* title's own input (psx_game_launcher.h) */
++extern "C" void psx_host_pad_register(PsxHostPadFn fn) { g_host_pad = fn; }
++static uint16_t device_pad_buttons(const PlayerInput& p, int player, bool suppress_stick_axes);
+ static uint16_t pad_buttons_for(const PlayerInput& p, int player, bool suppress_stick_axes) {
++    const uint16_t b = device_pad_buttons(p, player, suppress_stick_axes);
++    return g_host_pad ? (uint16_t)(b & g_host_pad(player)) : b;
++}
++static uint16_t device_pad_buttons(const PlayerInput& p, int player, bool suppress_stick_axes) {
+     if (p.kind == 1) return pad_from_keyboard(player);
+     if (p.kind == 2) {
+         uint16_t b = controller_pad_buttons(controller_map_for(p), p.handle,
+@@ -9557,6 +9567,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+                             g_video_aa ? 1 : 0,
+                             pin_43 ? 1 : 0, 0 /* full width */);
+         netplay_note_present();
++    } else if (g_host_present &&
++               g_host_present(sdl_pixel_buf, src_w, src_h, src_w,
++                              pin_43 ? 4.0f / 3.0f
++                                     : (float)g_logical_w / (480.0f * (float)std::max(1, g_video_scale)),
++                              depth24_frame ? 1 : 0)) {
++        netplay_note_present();
+     } else {
+     if ((!sdl_renderer || !sdl_texture) && ensure_sw_sdl_present() != 0)
+         return ep;
+@@ -16125,6 +16141,8 @@ static uint32_t gcs_gate_read_ram(uint32_t phys, uint32_t size) {
+ 
+ static PsxGameLauncherFn g_game_launcher = nullptr;
+ extern "C" void psx_game_launcher_register(PsxGameLauncherFn fn) { g_game_launcher = fn; }
++static std::string g_game_launcher_disc;
++extern "C" void psx_game_launcher_set_disc(const char* path) { g_game_launcher_disc = path ? path : ""; }
+ 
+ int main(int argc, char** argv) {
+     /* Force line-buffered output so messages appear even if killed. */
+@@ -16338,8 +16356,12 @@ int main(int argc, char** argv) {
+     /* A launcher compiled into the title (psx_game_launcher.h) runs first. */
+     if (g_game_launcher && !force_no_launcher && !g_headless) {
+         const char* env = std::getenv("PSX_NO_LAUNCHER");
+-        if (!env || !env[0] || env[0] == '0')
+-            return g_game_launcher(argc, argv);
++        if (!env || !env[0] || env[0] == '0') {
++            const int launcher_rc = g_game_launcher(argc, argv);
++            if (launcher_rc != PSX_GAME_LAUNCHER_CONTINUE) return launcher_rc;
++            if (!g_game_launcher_disc.empty())
++                disc_override_path = g_game_launcher_disc.c_str();
++        }
+     }
+ 
+     std::string default_game_config_storage;
+-- 
+2.54.0 (Apple Git-157)
+

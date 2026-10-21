@@ -294,7 +294,7 @@ fs::path pack_for(const Ctx& c) {
     for (const auto& p : parts) {
         std::error_code ec;
         const auto t = fs::last_write_time(base / "replacements" / p, ec);
-        stamp += p + ":" + std::to_string(ec ? 0 : t.time_since_epoch().count()) + ";";
+        stamp += p + ":" + std::to_string(ec ? 0LL : (long long)t.time_since_epoch().count()) + ";";
     }
     if (read_text(variant / "launcher-source.txt") != stamp) {
         std::error_code ec;
@@ -2261,7 +2261,9 @@ const PsxGameMenuHooks kHooks = {hook_open, hook_is_open, hook_key, hook_tick, h
 
 struct Register {
     Register() {
+#if !HERC_IOS  // iOS registers its own launcher (ios/ios_launcher.mm)
         psx_game_launcher_register(&launcher_main);
+#endif
         psx_game_menu_register(&ingame::kHooks);
     }
 } g_register;

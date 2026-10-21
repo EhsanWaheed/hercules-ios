@@ -37,7 +37,7 @@ id = "hercules.widescreen"
 feature = "widescreen"
 id = "aspect"
 label = "Aspect at start"
-description = "16:9 or 4:3 when the game starts; the in-game menu switches live."
+description = "16:9, 4:3 or the screen's own shape when the game starts; the in-game menu switches live."
 type = "choice"
 default = "16:9"
 
@@ -48,3 +48,7 @@ label = "16:9"
 [[option.choice]]
 value = "4:3"
 label = "4:3"
+
+[[option.choice]]
+value = "screen"
+label = "Fit screen"

@@ -1,0 +1,11 @@
+
+# iOS: the player's own box art for the launcher (not redistributable)
+port/ios/LauncherArt.png
+.venv/
+port/build-*/
+# generated from the player's own disc: never published
+port/versions/*/generated/
+port/versions/*/toolchain/
+port/versions/*/.cache/
+# local build logs
+/*.log
