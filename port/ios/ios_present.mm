@@ -72,6 +72,7 @@ struct Presenter {
 #endif
     bool fx_supported = false;
     double last_exit = 0, game_s = 0, present_s = 0, wait_s = 0;  // timing, logged every 5 s
+    double last_cpu = 0, cpu_s = 0;
     int log_frames = 0;
     double fps = 0;  // frames presented per second, over the last second
     bool failed = false;
@@ -206,6 +207,14 @@ int present(const uint32_t *argb, int w, int h, int stride, float aspect, int de
         static int frames = 0;
         ++frames;
         if (g.last_exit > 0) g.game_s += entered - g.last_exit;
+        {
+            // the main thread's own CPU time (the recompiled game, the native picture, this presenter; not its sleeps)
+            struct timespec ts;
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+            const double cpu = ts.tv_sec + ts.tv_nsec * 1e-9;
+            if (g.last_cpu > 0) g.cpu_s += cpu - g.last_cpu;
+            g.last_cpu = cpu;
+        }
         if (entered - since >= 1.0) {
             g.fps = frames / (entered - since);
             since = entered;
@@ -214,10 +223,12 @@ int present(const uint32_t *argb, int w, int h, int stride, float aspect, int de
         if (entered - logged >= 5.0) {
             const double n = std::max(1, g.log_frames);
             const char *thermal[] = {"nominal", "fair", "serious", "critical"};
-            fprintf(stderr, "[present] %.1f fps, %dx%d | per frame: game %.2f ms, present %.2f ms (wait %.2f ms) | thermal %s\n",
-                    g.fps, w, h, g.game_s * 1000 / n, g.present_s * 1000 / n, g.wait_s * 1000 / n,
+            fprintf(stderr,
+                    "[present] %.1f fps, %dx%d | per frame: main thread cpu %.2f ms of 16.67, between presents %.2f ms, "
+                    "present %.2f ms (drawable wait %.2f ms) | thermal %s\n",
+                    g.fps, w, h, g.cpu_s * 1000 / n, g.game_s * 1000 / n, g.present_s * 1000 / n, g.wait_s * 1000 / n,
                     thermal[std::clamp<NSInteger>(NSProcessInfo.processInfo.thermalState, 0, 3)]);
-            g.game_s = g.present_s = g.wait_s = 0;
+            g.game_s = g.present_s = g.wait_s = g.cpu_s = 0;
             g.log_frames = 0;
             logged = entered;
         }

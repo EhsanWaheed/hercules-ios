@@ -1,0 +1,61 @@
+From 8764e11ff6c28b7fc2d2fe73be0e6f9bc2703515 Mon Sep 17 00:00:00 2001
+From: e5n97 <58152408+EhsanWaheed@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 10:10:54 +0100
+Subject: [PATCH] Apple: the frame pacer sleeps to the deadline instead of
+ spinning
+
+frame_pacer_wait slept to within ~1-2 ms of the deadline and spun the rest:
+up to ~2 ms of a core every frame. On a phone that is steady heat and, after
+a long session, the thermal throttling that follows. The kernel wakes an
+absolute-time wait (mach_wait_until) within tens of microseconds, so on Apple
+platforms sleep to the deadline itself. The deadline still advances by
+exactly one period, so a slightly late wake never accumulates.
+---
+ runtime/src/frame_pacing.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/runtime/src/frame_pacing.c b/runtime/src/frame_pacing.c
+index be30e5a..f049140 100644
+--- a/runtime/src/frame_pacing.c
++++ b/runtime/src/frame_pacing.c
+@@ -9,6 +9,9 @@
+ #ifndef FRAME_PACING_PURE_ONLY
+ #include "psx_sdl.h"
+ #include "host_time.h"
++#if defined(__APPLE__)
++#include <mach/mach_time.h>
++#endif
+ #endif
+ 
+ uint32_t frame_pacing_sleep_ms(uint64_t now, uint64_t deadline,
+@@ -62,6 +65,19 @@ void frame_pacer_wait(FramePacer *p, double period_ms) {
+         return;
+     }
+ 
++#if defined(__APPLE__)
++    /* Apple: the kernel wakes an absolute-time wait within tens of
++     * microseconds, so sleep to the deadline itself. The sleep-then-spin
++     * below burned up to ~2 ms of a core every frame, which on a phone is
++     * steady heat (and the throttling that follows). */
++    now = SDL_GetPerformanceCounter();
++    if (now < p->next_deadline) {
++        const uint64_t ns = (uint64_t)((double)(p->next_deadline - now) * 1e9 / (double)freq);
++        mach_timebase_info_data_t tb;
++        mach_timebase_info(&tb);
++        mach_wait_until(mach_absolute_time() + ns * tb.denom / tb.numer);
++    }
++#else
+     for (;;) {
+         now = SDL_GetPerformanceCounter();     /* ONE read per iteration */
+         uint32_t ms = frame_pacing_sleep_ms(now, p->next_deadline, freq, period);
+@@ -72,6 +88,7 @@ void frame_pacer_wait(FramePacer *p, double period_ms) {
+     while (SDL_GetPerformanceCounter() < p->next_deadline) {
+         /* final sub-ms spin */
+     }
++#endif
+     p->next_deadline += period;
+ }
+ #endif /* FRAME_PACING_PURE_ONLY */
+-- 
+2.54.0 (Apple Git-157)
+
