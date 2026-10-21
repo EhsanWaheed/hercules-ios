@@ -13,7 +13,7 @@
 
 set(HERC_IOS_DIR "${HERC_ROOT}/ios")
 set(HERC_IOS_BUNDLE_ID "com.E5N97.hercules" CACHE STRING "iOS bundle identifier")
-set(HERC_IOS_APP_VERSION "0.1" CACHE STRING "CFBundleShortVersionString")
+set(HERC_IOS_APP_VERSION "1.0" CACHE STRING "CFBundleShortVersionString")
 set(HERC_IOS_BUNDLE_DISC "" CACHE PATH "Folder with the disc (.cue + .bin) to put in the app; empty: none")
 
 # ---- the framework's OpenGL renderer on iOS ------------------------------

@@ -23,7 +23,7 @@ Fan project, not affiliated with or endorsed by Disney or Sony.
 ## iPhone and iPad (this fork)
 
 This fork of [obaidr1/hercules-recompiled](https://github.com/obaidr1/hercules-recompiled) adds a native iOS and
-iPadOS port. The test build (`HerculesIOS-NGF.ipa`, from [Releases](https://github.com/EhsanWaheed/hercules-ios/releases))
+iPadOS port. **Version 1.0**: `HerculesIOS-NGF.ipa`, from [Releases](https://github.com/EhsanWaheed/hercules-ios/releases),
 contains **no game files**: you add your own disc the first time you open it.
 
 ### Features
@@ -35,7 +35,8 @@ contains **no game files**: you add your own disc the first time you open it.
   with button hints in the connected controller's own glyphs.
 - **Metal renderer.** The CPU draws the PS1's own picture exactly as the software renderer does (the game reads it
   back), the GPU draws the high-resolution one with the same per-pixel rules, so higher resolutions cost the GPU,
-  not the CPU: 3x holds a full 60 fps on an iPhone 17 Pro Max and the phone stays cool. 2x by default, up to 4x.
+  not the CPU: 3x holds a full 60 fps on an iPhone 17 Pro Max through a whole stage (6-10 ms of CPU and under
+  1 ms of GPU a frame). 2x by default, up to 4x.
 - **MetalFX upscaling** to the screen (spatial), with its output at 720p, 900p, 1080p or the screen's own height;
   sharp-bilinear and nearest as alternatives.
 - **Fills the screen.** *Fit screen* has the game draw out to the screen's own shape, the HUD in its corners: no
@@ -71,7 +72,8 @@ and turns away the others (it says which release a disc is).
 Prefer not to copy files by hand? Open the app without a `game` folder and use **Import disc folder…** or **Import
 disc ZIP…**: pick the folder (or a ZIP of it) wherever it is, and the launcher copies it into `Documents/game`.
 
-Saves are in `Documents/Saves`, the log of the last run in `Documents/Logs`.
+Saves are in `Documents/Saves`, the log of the last run in `Documents/Logs` (every 5 s: the frame rate, the CPU
+and GPU time a frame took, and the device's thermal state; handy in a bug report).
 
 ### Building it yourself
 
